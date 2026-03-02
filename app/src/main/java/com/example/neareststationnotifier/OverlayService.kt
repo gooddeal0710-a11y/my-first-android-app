@@ -1,3 +1,5 @@
+package com.example.neareststationnotifier
+
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -43,7 +45,7 @@ class OverlayService : Service() {
         windowManager.addView(overlayView, params)
 
         overlayView?.findViewById<Button>(R.id.btnOverlay)?.setOnClickListener {
-            // 次のStepで「最寄り駅表示オーバーレイ」に差し替える
+            // 次のStepで処理を入れる
         }
     }
 
