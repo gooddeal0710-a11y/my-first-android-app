@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content">
+
+    <Button
+        android:id="@+id/btnOverlay"
+        android:layout_width="56dp"
+        android:layout_height="56dp"
+        android:text="駅"
+        android:alpha="0.35"
+        android:backgroundTint="#000000"
+        android:textColor="#FFFFFF" />
+</FrameLayout>
