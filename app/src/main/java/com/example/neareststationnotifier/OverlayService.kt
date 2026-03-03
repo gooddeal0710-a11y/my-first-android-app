@@ -18,6 +18,7 @@ class OverlayService : Service() {
 
     private lateinit var windowManager: WindowManager
     private var overlayView: android.view.View? = null
+    private var btn: Button? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -28,6 +29,8 @@ class OverlayService : Service() {
 
         val inflater = LayoutInflater.from(this)
         overlayView = inflater.inflate(R.layout.overlay_button, null)
+
+        btn = overlayView?.findViewById(R.id.btnOverlay)
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -44,15 +47,25 @@ class OverlayService : Service() {
 
         windowManager.addView(overlayView, params)
 
-        overlayView?.findViewById<Button>(R.id.btnOverlay)?.setOnClickListener {
-            // 次のStepで処理を入れる
+        // まずは表示更新できるかの動作確認：固定で駅名を入れる
+        setStationName("渋谷")
+
+        btn?.setOnClickListener {
+            // タップで表示を切り替えて、更新できることを確認
+            val current = btn?.text?.toString() ?: ""
+            if (current == "渋谷") setStationName("新宿") else setStationName("渋谷")
         }
+    }
+
+    private fun setStationName(name: String) {
+        btn?.text = name
     }
 
     override fun onDestroy() {
         super.onDestroy()
         overlayView?.let { windowManager.removeView(it) }
         overlayView = null
+        btn = null
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
