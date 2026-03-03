@@ -36,11 +36,8 @@ class OverlayService : Service() {
     private var overlayView: android.view.View? = null
     private var btn: Button? = null
 
-    private val fused by lazy {
-        LocationServices.getFusedLocationProviderClient(this)
-    }
+    private val fused by lazy { LocationServices.getFusedLocationProviderClient(this) }
 
-    // 位置更新は2秒
     private val intervalMs = 2000L
 
     private val locationRequest by lazy {
@@ -53,10 +50,12 @@ class OverlayService : Service() {
     private var updateCount = 0
     private val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.JAPAN)
 
-    // 駅名表示用（駅APIは10秒に1回だけ叩く）
+    // 駅名＆API状態
     @Volatile private var lastStationName: String = "--"
+    @Volatile private var lastApiStatus: String = "api:idle"
     @Volatile private var lastStationUpdatedAtMs: Long = 0L
     private val stationUpdateIntervalMs = 10_000L
+
     private val http = OkHttpClient()
 
     private val locationCallback = object : LocationCallback() {
@@ -66,19 +65,19 @@ class OverlayService : Service() {
             val nowStr = timeFmt.format(Date())
 
             if (loc == null) {
-                btn?.text = "cnt:$updateCount $nowStr\nloc:null\nstation:$lastStationName"
+                btn?.text =
+                    "cnt:$updateCount $nowStr\nloc:null\n$lastApiStatus\nstation:$lastStationName"
                 return
             }
 
             val lat = loc.latitude
             val lon = loc.longitude
-
-            // 表示（lat/lonは小数点5桁）
             val latStr = String.format(Locale.US, "%.5f", lat)
             val lonStr = String.format(Locale.US, "%.5f", lon)
-            btn?.text = "cnt:$updateCount $nowStr\nlat:$latStr lon:$lonStr\nstation:$lastStationName"
 
-            // 駅名更新（10秒に1回）
+            btn?.text =
+                "cnt:$updateCount $nowStr\nlat:$latStr lon:$lonStr\n$lastApiStatus\nstation:$lastStationName"
+
             val nowMs = System.currentTimeMillis()
             if (nowMs - lastStationUpdatedAtMs >= stationUpdateIntervalMs) {
                 lastStationUpdatedAtMs = nowMs
@@ -116,10 +115,7 @@ class OverlayService : Service() {
             return
         }
 
-        btn?.text = "loc: waiting...\nstation:$lastStationName"
-
-        // ★重要：タップで表示が変わる処理は入れない（前の挙動に戻す）
-        // btn?.setOnClickListener { ... } ← これを置かない
+        btn?.text = "loc: waiting...\n$lastApiStatus\nstation:$lastStationName"
 
         fused.requestLocationUpdates(
             locationRequest,
@@ -131,20 +127,22 @@ class OverlayService : Service() {
     private fun fetchNearestStationAsync(lat: Double, lon: Double) {
         thread(start = true) {
             try {
-                // 例：HeartRails Express（最寄り駅）
+                lastApiStatus = "api:fetching"
+
+                // HeartRails Express: x=経度, y=緯度
                 val url =
                     "https://express.heartrails.com/api/json?method=getStations&x=$lon&y=$lat"
 
                 val req = Request.Builder().url(url).get().build()
                 http.newCall(req).execute().use { resp ->
                     if (!resp.isSuccessful) {
-                        lastStationName = "api:${resp.code}"
+                        lastApiStatus = "api:http${resp.code}"
                         return@thread
                     }
+
                     val body = resp.body?.string().orEmpty()
                     val json = JSONObject(body)
 
-                    // response.station[0].name を読む想定
                     val stationArr = json
                         .optJSONObject("response")
                         ?.optJSONArray("station")
@@ -155,9 +153,10 @@ class OverlayService : Service() {
                         ?: "--"
 
                     lastStationName = name
+                    lastApiStatus = "api:ok"
                 }
             } catch (e: Exception) {
-                lastStationName = "api:err"
+                lastApiStatus = "api:err"
             }
         }
     }
