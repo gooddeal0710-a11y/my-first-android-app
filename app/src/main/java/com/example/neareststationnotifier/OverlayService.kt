@@ -9,7 +9,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.PixelFormat
 import android.os.Build
-import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.view.Gravity
@@ -18,7 +17,11 @@ import android.view.WindowManager
 import android.widget.Button
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import com.google.android.gms.location.LocationCallback
+import com.google.android.gms.location.LocationRequest
+import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
 import java.util.Locale
 
 class OverlayService : Service() {
@@ -27,17 +30,27 @@ class OverlayService : Service() {
     private var overlayView: android.view.View? = null
     private var btn: Button? = null
 
-    private val handler = Handler(Looper.getMainLooper())
-    private val intervalMs = 3000L // 3秒ごと
-
     private val fused by lazy {
         LocationServices.getFusedLocationProviderClient(this)
     }
 
-    private val updateRunnable = object : Runnable {
-        override fun run() {
-            updateLocationOnce()
-            handler.postDelayed(this, intervalMs)
+    private val locationRequest by lazy {
+        LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, 3000L)
+            .setMinUpdateIntervalMillis(3000L)
+            .setWaitForAccurateLocation(false)
+            .build()
+    }
+
+    private val locationCallback = object : LocationCallback() {
+        override fun onLocationResult(result: LocationResult) {
+            val loc = result.lastLocation
+            if (loc == null) {
+                btn?.text = "loc: null"
+                return
+            }
+            val lat = String.format(Locale.US, "%.5f", loc.latitude)
+            val lon = String.format(Locale.US, "%.5f", loc.longitude)
+            btn?.text = "lat:$lat\nlon:$lon"
         }
     }
 
@@ -66,19 +79,24 @@ class OverlayService : Service() {
 
         windowManager.addView(overlayView, params)
 
-        btn?.text = "loc: --"
-
-        // 位置情報の権限が無いと取得できないので表示だけして止める
         if (!hasLocationPermission()) {
             btn?.text = "位置情報権限なし"
             return
         }
 
-        // 定期更新開始
-        handler.post(updateRunnable)
+        btn?.text = "loc: waiting..."
 
-        // タップで即時更新（デバッグ用）
-        btn?.setOnClickListener { updateLocationOnce() }
+        // 定期的な位置更新を開始（lastLocationではなくこちらが本命）
+        fused.requestLocationUpdates(
+            locationRequest,
+            locationCallback,
+            Looper.getMainLooper()
+        )
+
+        // タップで「いま動いてるか」確認用の表示
+        btn?.setOnClickListener {
+            btn?.text = "loc: updating..."
+        }
     }
 
     private fun hasLocationPermission(): Boolean {
@@ -87,30 +105,9 @@ class OverlayService : Service() {
         return fine == PackageManager.PERMISSION_GRANTED || coarse == PackageManager.PERMISSION_GRANTED
     }
 
-    private fun updateLocationOnce() {
-        if (!hasLocationPermission()) {
-            btn?.text = "位置情報権限なし"
-            return
-        }
-
-        fused.lastLocation
-            .addOnSuccessListener { loc ->
-                if (loc == null) {
-                    btn?.text = "loc: null"
-                    return@addOnSuccessListener
-                }
-                val lat = String.format(Locale.US, "%.5f", loc.latitude)
-                val lon = String.format(Locale.US, "%.5f", loc.longitude)
-                btn?.text = "lat:$lat\nlon:$lon"
-            }
-            .addOnFailureListener { e ->
-                btn?.text = "loc err"
-            }
-    }
-
     override fun onDestroy() {
         super.onDestroy()
-        handler.removeCallbacks(updateRunnable)
+        fused.removeLocationUpdates(locationCallback)
         overlayView?.let { windowManager.removeView(it) }
         overlayView = null
         btn = null
