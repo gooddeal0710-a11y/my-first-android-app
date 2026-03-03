@@ -5,17 +5,17 @@
 
     <Button
         android:id="@+id/btnOverlay"
-        android:layout_width="220dp"
+        android:layout_width="300dp"
         android:layout_height="wrap_content"
-        android:minHeight="44dp"
+        android:minHeight="72dp"
         android:paddingStart="10dp"
         android:paddingEnd="10dp"
-        android:paddingTop="8dp"
-        android:paddingBottom="8dp"
+        android:paddingTop="10dp"
+        android:paddingBottom="10dp"
         android:text="loc"
         android:textSize="12sp"
         android:textStyle="bold"
-        android:maxLines="2"
+        android:maxLines="4"
         android:ellipsize="end"
         android:gravity="center"
         android:includeFontPadding="false" />
