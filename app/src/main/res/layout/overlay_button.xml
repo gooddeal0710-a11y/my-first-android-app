@@ -18,5 +18,7 @@
         android:maxLines="4"
         android:ellipsize="end"
         android:gravity="center"
-        android:includeFontPadding="false" />
+        android:includeFontPadding="false"
+        android:background="#66000000"
+        android:textColor="#FFFFFFFF" />
 </FrameLayout>
