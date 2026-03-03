@@ -2,11 +2,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.example.neareststationnotifier">
 
-    <!-- Android 13+ 通知（Foreground Serviceの通知を出すため） -->
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 上に表示（オーバーレイ） -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
-    <!-- Foreground Service を使うため -->
+    <!-- Foreground Service -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+
+    <!-- Android 13+ 通知（Foreground Serviceの通知用） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:allowBackup="true"
@@ -23,7 +26,7 @@
             </intent-filter>
         </activity>
 
-        <!-- ここが重要：foregroundServiceType を付けない（dataSync等を外す） -->
+        <!-- 重要：foregroundServiceType は付けない（dataSync等を付けない） -->
         <service
             android:name=".OverlayService"
             android:exported="false" />
