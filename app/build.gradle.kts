@@ -53,8 +53,11 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
 
-    // 追加：位置情報（Fused Location Provider）
+    // Location
     implementation("com.google.android.gms:play-services-location:21.3.0")
+
+    // Network (駅API)
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
