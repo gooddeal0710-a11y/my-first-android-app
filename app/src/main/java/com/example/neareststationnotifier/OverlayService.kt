@@ -38,7 +38,8 @@ class OverlayService : Service() {
 
     private val fused by lazy { LocationServices.getFusedLocationProviderClient(this) }
 
-    private val intervalMs = 2000L
+    // ★位置更新：5秒（2秒→5秒）
+    private val intervalMs = 5000L
 
     private val locationRequest by lazy {
         LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, intervalMs)
@@ -50,10 +51,11 @@ class OverlayService : Service() {
     private var updateCount = 0
     private val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.JAPAN)
 
-    // 駅名＆API状態
     @Volatile private var lastStationName: String = "--"
     @Volatile private var lastApiStatus: String = "api:idle"
     @Volatile private var lastStationUpdatedAtMs: Long = 0L
+
+    // 駅API：10秒に1回（必要なら30秒に上げる）
     private val stationUpdateIntervalMs = 10_000L
 
     private val http = OkHttpClient()
@@ -129,7 +131,6 @@ class OverlayService : Service() {
             try {
                 lastApiStatus = "api:fetching"
 
-                // HeartRails Express: x=経度, y=緯度
                 val url =
                     "https://express.heartrails.com/api/json?method=getStations&x=$lon&y=$lat"
 
