@@ -8,6 +8,9 @@
     <!-- Foreground Service -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 
+    <!-- Android 14+ で specialUse を使うため -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
     <!-- Android 13+ 通知（Foreground Serviceの通知用） -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
@@ -26,10 +29,16 @@
             </intent-filter>
         </activity>
 
-        <!-- 重要：foregroundServiceType は付けない（dataSync等を付けない） -->
+        <!-- 重要：FGS type を specialUse にする -->
         <service
             android:name=".OverlayService"
-            android:exported="false" />
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <!-- specialUse の理由（Android 14+で推奨される） -->
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="overlay_ui" />
+        </service>
 
     </application>
 </manifest>
