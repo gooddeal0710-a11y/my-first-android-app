@@ -22,6 +22,8 @@ import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 class OverlayService : Service() {
@@ -44,16 +46,23 @@ class OverlayService : Service() {
             .build()
     }
 
+    private var updateCount = 0
+    private val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.JAPAN)
+
     private val locationCallback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
             val loc = result.lastLocation
+            updateCount += 1
+            val now = timeFmt.format(Date())
+
             if (loc == null) {
-                btn?.text = "loc: null"
+                btn?.text = "cnt:$updateCount $now\nloc:null"
                 return
             }
+
             val lat = String.format(Locale.US, "%.5f", loc.latitude)
             val lon = String.format(Locale.US, "%.5f", loc.longitude)
-            btn?.text = "lat:$lat\nlon:$lon"
+            btn?.text = "cnt:$updateCount $now\nlat:$lat lon:$lon"
         }
     }
 
@@ -96,7 +105,7 @@ class OverlayService : Service() {
         )
 
         btn?.setOnClickListener {
-            // デバッグ用：タップで状態表示
+            // デバッグ用：タップで状態表示（次の更新で上書きされるはず）
             btn?.text = "loc: updating..."
         }
     }
