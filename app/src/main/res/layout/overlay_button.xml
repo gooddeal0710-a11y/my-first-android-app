@@ -5,10 +5,18 @@
 
     <Button
         android:id="@+id/btnOverlay"
-        android:layout_width="56dp"
-        android:layout_height="56dp"
-        android:text="駅"
-        android:alpha="0.35"
-        android:backgroundTint="#000000"
-        android:textColor="#FFFFFF" />
+        android:layout_width="220dp"
+        android:layout_height="wrap_content"
+        android:minHeight="44dp"
+        android:paddingStart="10dp"
+        android:paddingEnd="10dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="8dp"
+        android:text="loc"
+        android:textSize="12sp"
+        android:textStyle="bold"
+        android:maxLines="2"
+        android:ellipsize="end"
+        android:gravity="center"
+        android:includeFontPadding="false" />
 </FrameLayout>
