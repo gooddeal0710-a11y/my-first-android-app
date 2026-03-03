@@ -2,7 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.example.neareststationnotifier">
 
-    <!-- Network (駅API呼び出し用) -->
+    <!-- Network (駅API用) -->
     <uses-permission android:name="android.permission.INTERNET" />
 
     <!-- Overlay -->
