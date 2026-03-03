@@ -34,9 +34,12 @@ class OverlayService : Service() {
         LocationServices.getFusedLocationProviderClient(this)
     }
 
+    // ★更新間隔：2秒
+    private val intervalMs = 2000L
+
     private val locationRequest by lazy {
-        LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, 3000L)
-            .setMinUpdateIntervalMillis(3000L)
+        LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, intervalMs)
+            .setMinUpdateIntervalMillis(intervalMs)
             .setWaitForAccurateLocation(false)
             .build()
     }
@@ -86,15 +89,14 @@ class OverlayService : Service() {
 
         btn?.text = "loc: waiting..."
 
-        // 定期的な位置更新を開始（lastLocationではなくこちらが本命）
         fused.requestLocationUpdates(
             locationRequest,
             locationCallback,
             Looper.getMainLooper()
         )
 
-        // タップで「いま動いてるか」確認用の表示
         btn?.setOnClickListener {
+            // デバッグ用：タップで状態表示
             btn?.text = "loc: updating..."
         }
     }
@@ -130,7 +132,7 @@ class OverlayService : Service() {
 
         return NotificationCompat.Builder(this, channelId)
             .setContentTitle("Overlay running")
-            .setContentText("位置情報を表示中")
+            .setContentText("位置情報を表示中（${intervalMs}ms）")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .build()
     }
