@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 外側の薄い縁（リング） -->
+    <item>
+        <shape android:shape="oval">
+            <size android:width="56dp" android:height="56dp" />
+            <solid android:color="#00000000" />
+            <stroke android:width="2dp" android:color="#55FFFFFF" />
+        </shape>
+    </item>
+
+    <!-- 本体：上が少し明るい縦グラデーション -->
+    <item android:left="2dp" android:top="2dp" android:right="2dp" android:bottom="2dp">
+        <shape android:shape="oval">
+            <gradient
+                android:angle="270"
+                android:startColor="#66FFFFFF"
+                android:centerColor="#33000000"
+                android:endColor="#88000000"
+                android:type="linear" />
+        </shape>
+    </item>
+
+    <!-- 内側のハイライト（小さめの光） -->
+    <item android:left="10dp" android:top="8dp" android:right="22dp" android:bottom="26dp">
+        <shape android:shape="oval">
+            <gradient
+                android:angle="270"
+                android:startColor="#66FFFFFF"
+                android:endColor="#00FFFFFF"
+                android:type="linear" />
+        </shape>
+    </item>
+
+</layer-list>
