@@ -47,10 +47,7 @@ class OverlayService : Service() {
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    // 長押しで固定表示
     @Volatile private var pinned: Boolean = false
-
-    // 5秒後に自動で隠す（pinned=falseの時だけ）
     private val autoHideRunnable = Runnable {
         if (!pinned) hidePanel()
     }
@@ -93,12 +90,10 @@ class OverlayService : Service() {
                 "cnt:$updateCount $nowStr\nlat:$latStr lon:$lonStr\n$lastApiStatus\nstation:$lastStationName"
             }
 
-            // パネル表示中だけ更新（普段は小玉だけ）
             if (isPanelVisible()) {
                 mainHandler.post { txtPanel?.text = lastDisplayText }
             }
 
-            // 駅名更新（10秒に1回）
             val locNonNull = loc ?: return
             val nowMs = System.currentTimeMillis()
             if (nowMs - lastStationUpdatedAtMs >= stationUpdateIntervalMs) {
@@ -127,7 +122,8 @@ class OverlayService : Service() {
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = Gravity.TOP or Gravity.END
+            // ★重要：START基準にする（パネル表示でサイズが変わっても位置が飛ばない）
+            gravity = Gravity.TOP or Gravity.START
             x = 24
             y = 400
         }
@@ -153,7 +149,7 @@ class OverlayService : Service() {
             hidePanel()
         }
 
-        // ドラッグ移動（小玉を掴んで動かす）
+        // ドラッグ移動（ボタンを掴んで動かす）
         btnDot?.setOnTouchListener(DragTouchListener())
 
         if (!hasLocationPermission()) {
@@ -213,14 +209,14 @@ class OverlayService : Service() {
                     val dy = (event.rawY - touchY).toInt()
                     if (abs(dx) > 6 || abs(dy) > 6) moved = true
 
-                    params.x = startX - dx
+                    // START基準なので、ドラッグは素直に加算でOK
+                    params.x = startX + dx
                     params.y = startY + dy
                     windowManager.updateViewLayout(overlayView, params)
                     return true
                 }
 
                 MotionEvent.ACTION_UP -> {
-                    // moved=falseならクリック/長押しに任せる
                     return moved
                 }
             }
@@ -233,7 +229,6 @@ class OverlayService : Service() {
             try {
                 lastApiStatus = "api:fetching"
 
-                // HeartRails Express: x=経度, y=緯度
                 val url =
                     "https://express.heartrails.com/api/json?method=getStations&x=$lon&y=$lat"
 
@@ -259,7 +254,6 @@ class OverlayService : Service() {
                     lastStationName = name
                     lastApiStatus = "api:ok"
 
-                    // パネル表示中なら即反映
                     if (isPanelVisible()) {
                         mainHandler.post { txtPanel?.text = lastDisplayText }
                     }
