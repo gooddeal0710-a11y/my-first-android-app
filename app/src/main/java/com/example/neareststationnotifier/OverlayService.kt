@@ -12,10 +12,13 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.text.TextUtils
+import android.util.TypedValue
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
@@ -33,19 +36,20 @@ import java.util.Date
 import java.util.Locale
 import kotlin.concurrent.thread
 import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
 
 class OverlayService : Service() {
 
     private lateinit var windowManager: WindowManager
 
-    // ドット（移動する）
+    // 移動する玉
     private var dotView: View? = null
     private var txtDot: TextView? = null
     private lateinit var dotParams: WindowManager.LayoutParams
 
-    // 上センターパネル（固定位置）
-    private var panelView: View? = null
-    private var txtTopPanel: TextView? = null
+    // 上センターに出す情報パネル（コード生成）
+    private var panelText: TextView? = null
     private lateinit var panelParams: WindowManager.LayoutParams
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -54,6 +58,7 @@ class OverlayService : Service() {
 
     private val fused by lazy { LocationServices.getFusedLocationProviderClient(this) }
 
+    // 位置更新：5秒
     private val intervalMs = 5000L
     private val locationRequest by lazy {
         LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, intervalMs)
@@ -88,7 +93,7 @@ class OverlayService : Service() {
             }
 
             if (isPanelShowing()) {
-                mainHandler.post { txtTopPanel?.text = lastDisplayText }
+                mainHandler.post { panelText?.text = lastDisplayText }
             }
 
             val locNonNull = loc ?: return
@@ -102,13 +107,12 @@ class OverlayService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-
         startForeground(1, createNotification())
 
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         val inflater = LayoutInflater.from(this)
 
-        // ドット
+        // --- 玉（overlay_dot.xml を使う前提） ---
         dotView = inflater.inflate(R.layout.overlay_dot, null)
         txtDot = dotView?.findViewById(R.id.txtDot)
 
@@ -116,53 +120,48 @@ class OverlayService : Service() {
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = 24
-            y = 900
+            x = dp(24)
+            y = dp(900)
         }
 
         windowManager.addView(dotView, dotParams)
 
-        // パネル（最初は表示しないので addView しない）
-        panelView = inflater.inflate(R.layout.overlay_top_panel, null)
-        txtTopPanel = panelView?.findViewById(R.id.txtTopPanel)
+        // --- 上センター情報パネル（コード生成） ---
+        panelText = TextView(this).apply {
+            text = "loading..."
+            setTextColor(0xFFFFFFFF.toInt())
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            maxLines = 6
+            ellipsize = TextUtils.TruncateAt.END
+            gravity = Gravity.CENTER
+            includeFontPadding = false
+            setBackgroundColor(0x66000000)
+
+            // タップで閉じる（固定解除）
+            setOnClickListener {
+                pinned = false
+                hidePanel()
+            }
+        }
 
         panelParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            x = 0
-            y = 80
+            y = dp(80)
         }
 
-        // 短押し：5秒表示
-        txtDot?.setOnClickListener {
-            pinned = false
-            showPanelFor(5000L)
-        }
-
-        // 長押し：固定表示
-        txtDot?.setOnLongClickListener {
-            pinned = true
-            showPanelPinned()
-            true
-        }
-
-        // パネルタップ：消す
-        panelView?.setOnClickListener {
-            pinned = false
-            hidePanel()
-        }
-
-        // ドラッグ移動
-        txtDot?.setOnTouchListener(DragTouchListener())
+        // タップ/長押し/ドラッグを分離（ドラッグ時は表示しない）
+        txtDot?.setOnTouchListener(TapLongDragTouchListener())
 
         if (!hasLocationPermission()) {
             lastDisplayText = "位置情報権限なし"
@@ -172,61 +171,111 @@ class OverlayService : Service() {
         fused.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
     }
 
-    private fun isPanelShowing(): Boolean = panelView?.parent != null
+    private fun isPanelShowing(): Boolean = panelText?.parent != null
 
     private fun showPanelFor(ms: Long) {
         mainHandler.removeCallbacks(autoHideRunnable)
-        txtTopPanel?.text = lastDisplayText
-        if (!isPanelShowing()) windowManager.addView(panelView, panelParams)
+        panelText?.text = lastDisplayText
+        if (!isPanelShowing()) windowManager.addView(panelText, panelParams)
         mainHandler.postDelayed(autoHideRunnable, ms)
     }
 
     private fun showPanelPinned() {
         mainHandler.removeCallbacks(autoHideRunnable)
-        txtTopPanel?.text = lastDisplayText
-        if (!isPanelShowing()) windowManager.addView(panelView, panelParams)
+        panelText?.text = lastDisplayText
+        if (!isPanelShowing()) windowManager.addView(panelText, panelParams)
     }
 
     private fun hidePanel() {
         mainHandler.removeCallbacks(autoHideRunnable)
-        if (isPanelShowing()) windowManager.removeView(panelView)
+        if (isPanelShowing()) windowManager.removeView(panelText)
     }
 
-    private inner class DragTouchListener : View.OnTouchListener {
+    private inner class TapLongDragTouchListener : View.OnTouchListener {
         private var startX = 0
         private var startY = 0
-        private var touchX = 0f
-        private var touchY = 0f
-        private var moved = false
+        private var downRawX = 0f
+        private var downRawY = 0f
+        private var dragging = false
+        private var longPressed = false
+
+        private val longPressTimeout = ViewConfiguration.getLongPressTimeout().toLong()
+        private val touchSlop = ViewConfiguration.get(this@OverlayService).scaledTouchSlop
+
+        private val longPressRunnable = Runnable {
+            if (!dragging) {
+                longPressed = true
+                pinned = true
+                showPanelPinned()
+            }
+        }
 
         override fun onTouch(v: View, event: MotionEvent): Boolean {
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
-                    moved = false
+                    dragging = false
+                    longPressed = false
+
                     startX = dotParams.x
                     startY = dotParams.y
-                    touchX = event.rawX
-                    touchY = event.rawY
-                    return false // クリック/長押しを生かす
-                }
+                    downRawX = event.rawX
+                    downRawY = event.rawY
 
-                MotionEvent.ACTION_MOVE -> {
-                    val dx = (event.rawX - touchX).toInt()
-                    val dy = (event.rawY - touchY).toInt()
-                    if (abs(dx) > 6 || abs(dy) > 6) moved = true
-
-                    dotParams.x = startX + dx
-                    dotParams.y = startY + dy
-                    windowManager.updateViewLayout(dotView, dotParams)
+                    mainHandler.postDelayed(longPressRunnable, longPressTimeout)
                     return true
                 }
 
-                MotionEvent.ACTION_UP -> {
-                    return moved
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = (event.rawX - downRawX).toInt()
+                    val dy = (event.rawY - downRawY).toInt()
+
+                    if (!dragging && (abs(dx) > touchSlop || abs(dy) > touchSlop)) {
+                        dragging = true
+                        mainHandler.removeCallbacks(longPressRunnable)
+                    }
+
+                    if (dragging) {
+                        dotParams.x = startX + dx
+                        dotParams.y = startY + dy
+                        windowManager.updateViewLayout(dotView, dotParams)
+                    }
+                    return true
+                }
+
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    mainHandler.removeCallbacks(longPressRunnable)
+
+                    if (dragging) {
+                        clampDotInsideScreen()
+                        return true
+                    }
+
+                    if (longPressed) {
+                        return true
+                    }
+
+                    // 単押し
+                    pinned = false
+                    showPanelFor(5000L)
+                    return true
                 }
             }
             return false
         }
+    }
+
+    private fun clampDotInsideScreen() {
+        val metrics = resources.displayMetrics
+        val screenW = metrics.widthPixels
+        val screenH = metrics.heightPixels
+
+        val w = dotView?.width ?: dp(56)
+        val h = dotView?.height ?: dp(56)
+
+        dotParams.x = min(max(dotParams.x, 0), max(screenW - w, 0))
+        dotParams.y = min(max(dotParams.y, 0), max(screenH - h, 0))
+
+        windowManager.updateViewLayout(dotView, dotParams)
     }
 
     private fun fetchNearestStationAsync(lat: Double, lon: Double) {
@@ -251,7 +300,7 @@ class OverlayService : Service() {
                     lastApiStatus = "api:ok"
 
                     if (isPanelShowing()) {
-                        mainHandler.post { txtTopPanel?.text = lastDisplayText }
+                        mainHandler.post { panelText?.text = lastDisplayText }
                     }
                 }
             } catch (_: Exception) {
@@ -266,18 +315,20 @@ class OverlayService : Service() {
         return fine == PackageManager.PERMISSION_GRANTED || coarse == PackageManager.PERMISSION_GRANTED
     }
 
+    private fun dp(v: Int): Int =
+        (v * resources.displayMetrics.density).toInt()
+
     override fun onDestroy() {
         super.onDestroy()
         mainHandler.removeCallbacks(autoHideRunnable)
         fused.removeLocationUpdates(locationCallback)
 
         try { if (dotView?.parent != null) windowManager.removeView(dotView) } catch (_: Exception) {}
-        try { if (panelView?.parent != null) windowManager.removeView(panelView) } catch (_: Exception) {}
+        try { if (panelText?.parent != null) windowManager.removeView(panelText) } catch (_: Exception) {}
 
         dotView = null
-        panelView = null
+        panelText = null
         txtDot = null
-        txtTopPanel = null
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -285,10 +336,15 @@ class OverlayService : Service() {
     private fun createNotification(): Notification {
         val channelId = "overlay_service"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(channelId, "Overlay Service", NotificationManager.IMPORTANCE_LOW)
+            val channel = NotificationChannel(
+                channelId,
+                "Overlay Service",
+                NotificationManager.IMPORTANCE_LOW
+            )
             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
             nm.createNotificationChannel(channel)
         }
+
         return NotificationCompat.Builder(this, channelId)
             .setContentTitle("Overlay running")
             .setContentText("位置情報を表示中（${intervalMs}ms / HIGH）")
