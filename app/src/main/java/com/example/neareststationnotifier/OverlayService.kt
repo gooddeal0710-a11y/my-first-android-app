@@ -9,12 +9,16 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.PixelFormat
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.view.Gravity
 import android.view.LayoutInflater
+import android.view.MotionEvent
+import android.view.View
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.TextView
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.google.android.gms.location.LocationCallback
@@ -29,16 +33,31 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.concurrent.thread
+import kotlin.math.abs
 
 class OverlayService : Service() {
 
     private lateinit var windowManager: WindowManager
-    private var overlayView: android.view.View? = null
-    private var btn: Button? = null
+    private var overlayView: View? = null
+
+    private var btnDot: Button? = null
+    private var txtPanel: TextView? = null
+
+    private lateinit var params: WindowManager.LayoutParams
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    // 長押しで固定表示
+    @Volatile private var pinned: Boolean = false
+
+    // 5秒後に自動で隠す（pinned=falseの時だけ）
+    private val autoHideRunnable = Runnable {
+        if (!pinned) hidePanel()
+    }
 
     private val fused by lazy { LocationServices.getFusedLocationProviderClient(this) }
 
-    // ★位置更新：5秒（2秒→5秒）
+    // 位置更新：5秒
     private val intervalMs = 5000L
 
     private val locationRequest by lazy {
@@ -54,11 +73,11 @@ class OverlayService : Service() {
     @Volatile private var lastStationName: String = "--"
     @Volatile private var lastApiStatus: String = "api:idle"
     @Volatile private var lastStationUpdatedAtMs: Long = 0L
-
-    // 駅API：10秒に1回（必要なら30秒に上げる）
     private val stationUpdateIntervalMs = 10_000L
 
     private val http = OkHttpClient()
+
+    @Volatile private var lastDisplayText: String = "loading..."
 
     private val locationCallback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
@@ -66,24 +85,25 @@ class OverlayService : Service() {
             updateCount += 1
             val nowStr = timeFmt.format(Date())
 
-            if (loc == null) {
-                btn?.text =
-                    "cnt:$updateCount $nowStr\nloc:null\n$lastApiStatus\nstation:$lastStationName"
-                return
+            lastDisplayText = if (loc == null) {
+                "cnt:$updateCount $nowStr\nloc:null\n$lastApiStatus\nstation:$lastStationName"
+            } else {
+                val latStr = String.format(Locale.US, "%.5f", loc.latitude)
+                val lonStr = String.format(Locale.US, "%.5f", loc.longitude)
+                "cnt:$updateCount $nowStr\nlat:$latStr lon:$lonStr\n$lastApiStatus\nstation:$lastStationName"
             }
 
-            val lat = loc.latitude
-            val lon = loc.longitude
-            val latStr = String.format(Locale.US, "%.5f", lat)
-            val lonStr = String.format(Locale.US, "%.5f", lon)
+            // パネル表示中だけ更新（普段は小玉だけ）
+            if (isPanelVisible()) {
+                mainHandler.post { txtPanel?.text = lastDisplayText }
+            }
 
-            btn?.text =
-                "cnt:$updateCount $nowStr\nlat:$latStr lon:$lonStr\n$lastApiStatus\nstation:$lastStationName"
-
+            // 駅名更新（10秒に1回）
+            val locNonNull = loc ?: return
             val nowMs = System.currentTimeMillis()
             if (nowMs - lastStationUpdatedAtMs >= stationUpdateIntervalMs) {
                 lastStationUpdatedAtMs = nowMs
-                fetchNearestStationAsync(lat, lon)
+                fetchNearestStationAsync(locNonNull.latitude, locNonNull.longitude)
             }
         }
     }
@@ -96,9 +116,11 @@ class OverlayService : Service() {
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         val inflater = LayoutInflater.from(this)
         overlayView = inflater.inflate(R.layout.overlay_button, null)
-        btn = overlayView?.findViewById(R.id.btnOverlay)
 
-        val params = WindowManager.LayoutParams(
+        btnDot = overlayView?.findViewById(R.id.btnDot)
+        txtPanel = overlayView?.findViewById(R.id.txtPanel)
+
+        params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
@@ -107,17 +129,37 @@ class OverlayService : Service() {
         ).apply {
             gravity = Gravity.TOP or Gravity.END
             x = 24
-            y = 200
+            y = 400
         }
 
         windowManager.addView(overlayView, params)
 
-        if (!hasLocationPermission()) {
-            btn?.text = "位置情報権限なし"
-            return
+        // 短押し：5秒だけ表示→自動で戻る
+        btnDot?.setOnClickListener {
+            pinned = false
+            showPanelFor(5000L)
         }
 
-        btn?.text = "loc: waiting...\n$lastApiStatus\nstation:$lastStationName"
+        // 長押し：固定表示（ずっと）
+        btnDot?.setOnLongClickListener {
+            pinned = true
+            showPanelPinned()
+            true
+        }
+
+        // パネルをタップ：ボタンに戻る（固定解除）
+        txtPanel?.setOnClickListener {
+            pinned = false
+            hidePanel()
+        }
+
+        // ドラッグ移動（小玉を掴んで動かす）
+        btnDot?.setOnTouchListener(DragTouchListener())
+
+        if (!hasLocationPermission()) {
+            lastDisplayText = "位置情報権限なし"
+            return
+        }
 
         fused.requestLocationUpdates(
             locationRequest,
@@ -126,11 +168,72 @@ class OverlayService : Service() {
         )
     }
 
+    private fun isPanelVisible(): Boolean {
+        return txtPanel?.visibility == View.VISIBLE
+    }
+
+    private fun showPanelFor(ms: Long) {
+        mainHandler.removeCallbacks(autoHideRunnable)
+        txtPanel?.text = lastDisplayText
+        txtPanel?.visibility = View.VISIBLE
+        mainHandler.postDelayed(autoHideRunnable, ms)
+    }
+
+    private fun showPanelPinned() {
+        mainHandler.removeCallbacks(autoHideRunnable)
+        txtPanel?.text = lastDisplayText
+        txtPanel?.visibility = View.VISIBLE
+    }
+
+    private fun hidePanel() {
+        mainHandler.removeCallbacks(autoHideRunnable)
+        txtPanel?.visibility = View.GONE
+    }
+
+    private inner class DragTouchListener : View.OnTouchListener {
+        private var startX = 0
+        private var startY = 0
+        private var touchX = 0f
+        private var touchY = 0f
+        private var moved = false
+
+        override fun onTouch(v: View, event: MotionEvent): Boolean {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    moved = false
+                    startX = params.x
+                    startY = params.y
+                    touchX = event.rawX
+                    touchY = event.rawY
+                    return false // クリック/長押しを生かす
+                }
+
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = (event.rawX - touchX).toInt()
+                    val dy = (event.rawY - touchY).toInt()
+                    if (abs(dx) > 6 || abs(dy) > 6) moved = true
+
+                    params.x = startX - dx
+                    params.y = startY + dy
+                    windowManager.updateViewLayout(overlayView, params)
+                    return true
+                }
+
+                MotionEvent.ACTION_UP -> {
+                    // moved=falseならクリック/長押しに任せる
+                    return moved
+                }
+            }
+            return false
+        }
+    }
+
     private fun fetchNearestStationAsync(lat: Double, lon: Double) {
         thread(start = true) {
             try {
                 lastApiStatus = "api:fetching"
 
+                // HeartRails Express: x=経度, y=緯度
                 val url =
                     "https://express.heartrails.com/api/json?method=getStations&x=$lon&y=$lat"
 
@@ -155,6 +258,11 @@ class OverlayService : Service() {
 
                     lastStationName = name
                     lastApiStatus = "api:ok"
+
+                    // パネル表示中なら即反映
+                    if (isPanelVisible()) {
+                        mainHandler.post { txtPanel?.text = lastDisplayText }
+                    }
                 }
             } catch (e: Exception) {
                 lastApiStatus = "api:err"
@@ -170,10 +278,12 @@ class OverlayService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        mainHandler.removeCallbacks(autoHideRunnable)
         fused.removeLocationUpdates(locationCallback)
         overlayView?.let { windowManager.removeView(it) }
         overlayView = null
-        btn = null
+        btnDot = null
+        txtPanel = null
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
