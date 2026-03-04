@@ -3,16 +3,12 @@
     android:layout_width="wrap_content"
     android:layout_height="wrap_content">
 
-    <!-- ButtonではなくViewで丸を確実にする -->
     <TextView
         android:id="@+id/txtDot"
         android:layout_width="56dp"
         android:layout_height="56dp"
-        android:background="@drawable/bg_overlay_dot"
-        android:text="駅"
-        android:textColor="#FFFFFFFF"
-        android:textStyle="bold"
-        android:textSize="14sp"
+        android:background="@drawable/bg_overlay_orb"
+        android:text=""
         android:gravity="center"
         android:includeFontPadding="false" />
 </FrameLayout>
