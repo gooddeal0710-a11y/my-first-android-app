@@ -17,7 +17,6 @@ import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
-import android.widget.Button
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -38,25 +37,24 @@ import kotlin.math.abs
 class OverlayService : Service() {
 
     private lateinit var windowManager: WindowManager
-    private var overlayView: View? = null
 
-    private var btnDot: Button? = null
-    private var txtPanel: TextView? = null
+    // ドット（移動する）
+    private var dotView: View? = null
+    private var txtDot: TextView? = null
+    private lateinit var dotParams: WindowManager.LayoutParams
 
-    private lateinit var params: WindowManager.LayoutParams
+    // 上センターパネル（固定位置）
+    private var panelView: View? = null
+    private var txtTopPanel: TextView? = null
+    private lateinit var panelParams: WindowManager.LayoutParams
 
     private val mainHandler = Handler(Looper.getMainLooper())
-
     @Volatile private var pinned: Boolean = false
-    private val autoHideRunnable = Runnable {
-        if (!pinned) hidePanel()
-    }
+    private val autoHideRunnable = Runnable { if (!pinned) hidePanel() }
 
     private val fused by lazy { LocationServices.getFusedLocationProviderClient(this) }
 
-    // 位置更新：5秒
     private val intervalMs = 5000L
-
     private val locationRequest by lazy {
         LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, intervalMs)
             .setMinUpdateIntervalMillis(intervalMs)
@@ -73,7 +71,6 @@ class OverlayService : Service() {
     private val stationUpdateIntervalMs = 10_000L
 
     private val http = OkHttpClient()
-
     @Volatile private var lastDisplayText: String = "loading..."
 
     private val locationCallback = object : LocationCallback() {
@@ -90,8 +87,8 @@ class OverlayService : Service() {
                 "cnt:$updateCount $nowStr\nlat:$latStr lon:$lonStr\n$lastApiStatus\nstation:$lastStationName"
             }
 
-            if (isPanelVisible()) {
-                mainHandler.post { txtPanel?.text = lastDisplayText }
+            if (isPanelShowing()) {
+                mainHandler.post { txtTopPanel?.text = lastDisplayText }
             }
 
             val locNonNull = loc ?: return
@@ -110,80 +107,89 @@ class OverlayService : Service() {
 
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         val inflater = LayoutInflater.from(this)
-        overlayView = inflater.inflate(R.layout.overlay_button, null)
 
-        btnDot = overlayView?.findViewById(R.id.btnDot)
-        txtPanel = overlayView?.findViewById(R.id.txtPanel)
+        // ドット
+        dotView = inflater.inflate(R.layout.overlay_dot, null)
+        txtDot = dotView?.findViewById(R.id.txtDot)
 
-        params = WindowManager.LayoutParams(
+        dotParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
-            // ★重要：START基準にする（パネル表示でサイズが変わっても位置が飛ばない）
             gravity = Gravity.TOP or Gravity.START
             x = 24
-            y = 400
+            y = 900
         }
 
-        windowManager.addView(overlayView, params)
+        windowManager.addView(dotView, dotParams)
 
-        // 短押し：5秒だけ表示→自動で戻る
-        btnDot?.setOnClickListener {
+        // パネル（最初は表示しないので addView しない）
+        panelView = inflater.inflate(R.layout.overlay_top_panel, null)
+        txtTopPanel = panelView?.findViewById(R.id.txtTopPanel)
+
+        panelParams = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            x = 0
+            y = 80
+        }
+
+        // 短押し：5秒表示
+        txtDot?.setOnClickListener {
             pinned = false
             showPanelFor(5000L)
         }
 
-        // 長押し：固定表示（ずっと）
-        btnDot?.setOnLongClickListener {
+        // 長押し：固定表示
+        txtDot?.setOnLongClickListener {
             pinned = true
             showPanelPinned()
             true
         }
 
-        // パネルをタップ：ボタンに戻る（固定解除）
-        txtPanel?.setOnClickListener {
+        // パネルタップ：消す
+        panelView?.setOnClickListener {
             pinned = false
             hidePanel()
         }
 
-        // ドラッグ移動（ボタンを掴んで動かす）
-        btnDot?.setOnTouchListener(DragTouchListener())
+        // ドラッグ移動
+        txtDot?.setOnTouchListener(DragTouchListener())
 
         if (!hasLocationPermission()) {
             lastDisplayText = "位置情報権限なし"
             return
         }
 
-        fused.requestLocationUpdates(
-            locationRequest,
-            locationCallback,
-            Looper.getMainLooper()
-        )
+        fused.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
     }
 
-    private fun isPanelVisible(): Boolean {
-        return txtPanel?.visibility == View.VISIBLE
-    }
+    private fun isPanelShowing(): Boolean = panelView?.parent != null
 
     private fun showPanelFor(ms: Long) {
         mainHandler.removeCallbacks(autoHideRunnable)
-        txtPanel?.text = lastDisplayText
-        txtPanel?.visibility = View.VISIBLE
+        txtTopPanel?.text = lastDisplayText
+        if (!isPanelShowing()) windowManager.addView(panelView, panelParams)
         mainHandler.postDelayed(autoHideRunnable, ms)
     }
 
     private fun showPanelPinned() {
         mainHandler.removeCallbacks(autoHideRunnable)
-        txtPanel?.text = lastDisplayText
-        txtPanel?.visibility = View.VISIBLE
+        txtTopPanel?.text = lastDisplayText
+        if (!isPanelShowing()) windowManager.addView(panelView, panelParams)
     }
 
     private fun hidePanel() {
         mainHandler.removeCallbacks(autoHideRunnable)
-        txtPanel?.visibility = View.GONE
+        if (isPanelShowing()) windowManager.removeView(panelView)
     }
 
     private inner class DragTouchListener : View.OnTouchListener {
@@ -197,8 +203,8 @@ class OverlayService : Service() {
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     moved = false
-                    startX = params.x
-                    startY = params.y
+                    startX = dotParams.x
+                    startY = dotParams.y
                     touchX = event.rawX
                     touchY = event.rawY
                     return false // クリック/長押しを生かす
@@ -209,10 +215,9 @@ class OverlayService : Service() {
                     val dy = (event.rawY - touchY).toInt()
                     if (abs(dx) > 6 || abs(dy) > 6) moved = true
 
-                    // START基準なので、ドラッグは素直に加算でOK
-                    params.x = startX + dx
-                    params.y = startY + dy
-                    windowManager.updateViewLayout(overlayView, params)
+                    dotParams.x = startX + dx
+                    dotParams.y = startY + dy
+                    windowManager.updateViewLayout(dotView, dotParams)
                     return true
                 }
 
@@ -228,11 +233,9 @@ class OverlayService : Service() {
         thread(start = true) {
             try {
                 lastApiStatus = "api:fetching"
-
-                val url =
-                    "https://express.heartrails.com/api/json?method=getStations&x=$lon&y=$lat"
-
+                val url = "https://express.heartrails.com/api/json?method=getStations&x=$lon&y=$lat"
                 val req = Request.Builder().url(url).get().build()
+
                 http.newCall(req).execute().use { resp ->
                     if (!resp.isSuccessful) {
                         lastApiStatus = "api:http${resp.code}"
@@ -241,24 +244,17 @@ class OverlayService : Service() {
 
                     val body = resp.body?.string().orEmpty()
                     val json = JSONObject(body)
-
-                    val stationArr = json
-                        .optJSONObject("response")
-                        ?.optJSONArray("station")
-
-                    val name = stationArr
-                        ?.optJSONObject(0)
-                        ?.optString("name", "--")
-                        ?: "--"
+                    val stationArr = json.optJSONObject("response")?.optJSONArray("station")
+                    val name = stationArr?.optJSONObject(0)?.optString("name", "--") ?: "--"
 
                     lastStationName = name
                     lastApiStatus = "api:ok"
 
-                    if (isPanelVisible()) {
-                        mainHandler.post { txtPanel?.text = lastDisplayText }
+                    if (isPanelShowing()) {
+                        mainHandler.post { txtTopPanel?.text = lastDisplayText }
                     }
                 }
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 lastApiStatus = "api:err"
             }
         }
@@ -274,27 +270,25 @@ class OverlayService : Service() {
         super.onDestroy()
         mainHandler.removeCallbacks(autoHideRunnable)
         fused.removeLocationUpdates(locationCallback)
-        overlayView?.let { windowManager.removeView(it) }
-        overlayView = null
-        btnDot = null
-        txtPanel = null
+
+        try { if (dotView?.parent != null) windowManager.removeView(dotView) } catch (_: Exception) {}
+        try { if (panelView?.parent != null) windowManager.removeView(panelView) } catch (_: Exception) {}
+
+        dotView = null
+        panelView = null
+        txtDot = null
+        txtTopPanel = null
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun createNotification(): Notification {
         val channelId = "overlay_service"
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                channelId,
-                "Overlay Service",
-                NotificationManager.IMPORTANCE_LOW
-            )
+            val channel = NotificationChannel(channelId, "Overlay Service", NotificationManager.IMPORTANCE_LOW)
             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
             nm.createNotificationChannel(channel)
         }
-
         return NotificationCompat.Builder(this, channelId)
             .setContentTitle("Overlay running")
             .setContentText("位置情報を表示中（${intervalMs}ms / HIGH）")
