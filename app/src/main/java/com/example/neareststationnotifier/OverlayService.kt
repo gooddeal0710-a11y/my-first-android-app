@@ -130,6 +130,9 @@ class OverlayService : Service() {
 
         windowManager.addView(dotView, dotParams)
 
+        // 初回レイアウト後に1回だけ画面内へ収める（初回ドラッグの跳ね対策）
+        dotView?.post { clampDotInsideScreen() }
+
         // --- 上センター情報パネル（コード生成） ---
         panelText = TextView(this).apply {
             text = "loading..."
@@ -232,6 +235,13 @@ class OverlayService : Service() {
                     if (!dragging && (abs(dx) > touchSlop || abs(dy) > touchSlop)) {
                         dragging = true
                         mainHandler.removeCallbacks(longPressRunnable)
+
+                        // ドラッグ開始確定時点で基準点を取り直す（急な跳ね抑制）
+                        startX = dotParams.x
+                        startY = dotParams.y
+                        downRawX = event.rawX
+                        downRawY = event.rawY
+                        return true
                     }
 
                     if (dragging) {
@@ -269,8 +279,10 @@ class OverlayService : Service() {
         val screenW = metrics.widthPixels
         val screenH = metrics.heightPixels
 
-        val w = dotView?.width ?: dp(56)
-        val h = dotView?.height ?: dp(56)
+        // 初回は width/height が 0 のことがあるのでfallbackを48dpに
+        val fallback = dp(48)
+        val w = dotView?.width?.takeIf { it > 0 } ?: fallback
+        val h = dotView?.height?.takeIf { it > 0 } ?: fallback
 
         dotParams.x = min(max(dotParams.x, 0), max(screenW - w, 0))
         dotParams.y = min(max(dotParams.y, 0), max(screenH - h, 0))
