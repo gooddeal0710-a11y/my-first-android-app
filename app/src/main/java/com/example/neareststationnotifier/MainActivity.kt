@@ -1,12 +1,15 @@
 package com.example.neareststationnotifier
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -20,14 +23,24 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import com.example.neareststationnotifier.ui.theme.NearestStationNotifierTheme
 
 class MainActivity : ComponentActivity() {
 
+    private val requestLocationPerms =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { _ ->
+            // 許可/不許可どちらでも、ボタンをもう一度押してもらう前提（ここでは自動起動しない）
+        }
+
+    private val requestPostNotifications =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { _ ->
+            // 同上
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // クラッシュログ保存を有効化（次回起動時に画面表示できる）
         CrashLogger.install(applicationContext)
 
         setContent {
@@ -63,11 +76,6 @@ class MainActivity : ComponentActivity() {
                             ) {
                                 Text("クラッシュログを削除")
                             }
-
-                            Text(
-                                text = "\nこのログの「FATAL EXCEPTION」〜「Caused by」付近をここに貼ってください。",
-                                modifier = Modifier.padding(top = 12.dp)
-                            )
                         } else {
                             Text(text = "\nクラッシュログはありません。\n")
 
@@ -98,23 +106,60 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun openOverlayPermissionScreen() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val intent = Intent(
-                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                Uri.parse("package:$packageName")
-            )
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            startActivity(intent)
-        }
-    }
-
     private fun startOverlayServiceSafely() {
+        // 1) Overlay権限が無いなら設定へ（ここではサービス起動しない）
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
+            openOverlayPermissionScreen()
+            return
+        }
+
+        // 2) Android 13+ 通知権限（無ければリクエストして終了）
+        if (Build.VERSION.SDK_INT >= 33) {
+            val granted = ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted) {
+                requestPostNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+                return
+            }
+        }
+
+        // 3) 位置情報権限（無ければリクエストして終了）
+        if (!hasLocationPermission()) {
+            requestLocationPerms.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
+            )
+            return
+        }
+
+        // 4) ここまで揃って初めてサービス起動
         val intent = Intent(this, OverlayService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(intent)
         } else {
             startService(intent)
+        }
+    }
+
+    private fun hasLocationPermission(): Boolean {
+        val fine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+        val coarse = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
+        return fine == PackageManager.PERMISSION_GRANTED || coarse == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun openOverlayPermissionScreen() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val intent = Intent(
+                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:$packageName")
+            ).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
         }
     }
 
