@@ -43,10 +43,12 @@ class OverlayService : Service() {
 
     private lateinit var windowManager: WindowManager
 
+    // 移動する玉
     private var dotView: View? = null
     private var txtDot: TextView? = null
     private lateinit var dotParams: WindowManager.LayoutParams
 
+    // 左上に出す情報パネル（常にaddViewしてアニメで出し入れ）
     private var panelText: TextView? = null
     private lateinit var panelParams: WindowManager.LayoutParams
 
@@ -56,6 +58,7 @@ class OverlayService : Service() {
 
     private val fused by lazy { LocationServices.getFusedLocationProviderClient(this) }
 
+    // 位置更新：5秒
     private val intervalMs = 5000L
     private val locationRequest by lazy {
         LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, intervalMs)
@@ -89,6 +92,7 @@ class OverlayService : Service() {
                 "cnt:$updateCount $nowStr\nlat:$latStr lon:$lonStr\n$lastApiStatus\nstation:$lastStationName"
             }
 
+            // 表示中ならテキスト更新
             if (isPanelShowing()) {
                 mainHandler.post { panelText?.text = lastDisplayText }
             }
@@ -109,6 +113,7 @@ class OverlayService : Service() {
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         val inflater = LayoutInflater.from(this)
 
+        // ---- 玉（overlay_dot.xml を使う前提：44dp） ----
         dotView = inflater.inflate(R.layout.overlay_dot, null)
         txtDot = dotView?.findViewById(R.id.txtDot)
 
@@ -125,8 +130,11 @@ class OverlayService : Service() {
         }
 
         windowManager.addView(dotView, dotParams)
+
+        // 初回レイアウト後に1回だけ画面内へ収める
         dotView?.post { clampDotInsideScreen() }
 
+        // ---- 情報パネル（左上固定、アニメで出し入れ） ----
         panelText = TextView(this).apply {
             text = "loading..."
             setTextColor(0xFFFFFFFF.toInt())
@@ -134,9 +142,11 @@ class OverlayService : Service() {
             setPadding(dp(12), dp(10), dp(12), dp(10))
             maxLines = 6
             ellipsize = TextUtils.TruncateAt.END
-            gravity = Gravity.CENTER
+            gravity = Gravity.START
             includeFontPadding = false
             setBackgroundColor(0x66000000)
+
+            // タップで閉じる（固定解除）
             setOnClickListener {
                 pinned = false
                 hidePanel()
@@ -151,39 +161,88 @@ class OverlayService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = dp(1)
-            y = dp(1)
+            x = 0
+            y = 0
         }
 
+        // パネルは最初から追加しておき、アニメで表示/非表示
+        windowManager.addView(panelText, panelParams)
+        panelText?.apply {
+            alpha = 0f
+            translationX = -dp(260).toFloat()
+            visibility = View.GONE
+        }
+
+        // タップ/長押し/ドラッグを分離
         txtDot?.setOnTouchListener(TapLongDragTouchListener())
 
         if (!hasLocationPermission()) {
             lastDisplayText = "位置情報権限なし"
             return
         }
+
         fused.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
     }
 
-    private fun isPanelShowing(): Boolean = panelText?.parent != null
+    private fun isPanelShowing(): Boolean =
+        panelText?.visibility == View.VISIBLE && (panelText?.alpha ?: 0f) > 0f
 
     private fun showPanelFor(ms: Long) {
+        pinned = false
         mainHandler.removeCallbacks(autoHideRunnable)
-        panelText?.text = lastDisplayText
-        if (!isPanelShowing()) windowManager.addView(panelText, panelParams)
+        animatePanelIn()
         mainHandler.postDelayed(autoHideRunnable, ms)
     }
 
     private fun showPanelPinned() {
+        pinned = true
         mainHandler.removeCallbacks(autoHideRunnable)
-        panelText?.text = lastDisplayText
-        if (!isPanelShowing()) windowManager.addView(panelText, panelParams)
+        animatePanelIn()
     }
 
     private fun hidePanel() {
         mainHandler.removeCallbacks(autoHideRunnable)
-        if (isPanelShowing()) windowManager.removeView(panelText)
+        animatePanelOut()
     }
 
+    private fun animatePanelIn() {
+        val v = panelText ?: return
+        v.text = lastDisplayText
+
+        // すでに表示中ならテキスト更新だけでOK
+        if (v.visibility == View.VISIBLE && v.alpha >= 1f) return
+
+        v.visibility = View.VISIBLE
+        v.animate().cancel()
+
+        v.translationX = -dp(260).toFloat()
+        v.alpha = 0f
+
+        v.animate()
+            .translationX(0f)
+            .alpha(1f)
+            .setDuration(220L)
+            .start()
+    }
+
+    private fun animatePanelOut() {
+        val v = panelText ?: return
+        if (v.visibility != View.VISIBLE) return
+
+        v.animate().cancel()
+        v.animate()
+            .translationX(-dp(260).toFloat())
+            .alpha(0f)
+            .setDuration(180L)
+            .withEndAction { v.visibility = View.GONE }
+            .start()
+    }
+
+    /**
+     * バウンド対策：
+     * - DOWN時に View の screen座標を取っておき、MOVEは rawX/rawY の差分で追従
+     * - rawYの基準が端末都合で一瞬変わっても跳ねにくい
+     */
     private inner class TapLongDragTouchListener : View.OnTouchListener {
 
         private var dragging = false
@@ -192,15 +251,12 @@ class OverlayService : Service() {
         private val longPressTimeout = ViewConfiguration.getLongPressTimeout().toLong()
         private val touchSlop = ViewConfiguration.get(this@OverlayService).scaledTouchSlop
 
-        // DOWN時点の指の位置（screen座標）
         private var downRawX = 0f
         private var downRawY = 0f
 
-        // DOWN時点のView左上（screen座標）
         private var downViewScreenX = 0
         private var downViewScreenY = 0
 
-        // DOWN時点のparams（保険）
         private var downParamX = 0
         private var downParamY = 0
 
@@ -223,7 +279,6 @@ class OverlayService : Service() {
                     downRawX = event.rawX
                     downRawY = event.rawY
 
-                    // Viewの左上(screen)を取る（これがバウンド対策の肝）
                     v.getLocationOnScreen(tmpLoc)
                     downViewScreenX = tmpLoc[0]
                     downViewScreenY = tmpLoc[1]
@@ -245,12 +300,9 @@ class OverlayService : Service() {
                     }
 
                     if (dragging) {
-                        // screen座標でのView左上を更新
                         val newViewScreenX = downViewScreenX + dx
                         val newViewScreenY = downViewScreenY + dy
 
-                        // paramsはTOP|START基準なので、そのままscreen左上相当として扱える端末が多い
-                        // もし端末差が出ても、DOWN時のparamsとの差分で追従するので跳ねにくい
                         dotParams.x = (downParamX + (newViewScreenX - downViewScreenX)).toInt()
                         dotParams.y = (downParamY + (newViewScreenY - downViewScreenY)).toInt()
 
@@ -266,9 +318,10 @@ class OverlayService : Service() {
                         clampDotInsideScreen()
                         return true
                     }
+
                     if (longPressed) return true
 
-                    pinned = false
+                    // 単押し：5秒表示
                     showPanelFor(5000L)
                     return true
                 }
@@ -282,6 +335,7 @@ class OverlayService : Service() {
         val screenW = metrics.widthPixels
         val screenH = metrics.heightPixels
 
+        // 初回は width/height が 0 のことがあるのでfallbackを44dpに
         val fallback = dp(44)
         val w = dotView?.width?.takeIf { it > 0 } ?: fallback
         val h = dotView?.height?.takeIf { it > 0 } ?: fallback
