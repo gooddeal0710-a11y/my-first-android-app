@@ -5,8 +5,8 @@
 
     <TextView
         android:id="@+id/txtDot"
-        android:layout_width="56dp"
-        android:layout_height="56dp"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
         android:background="@drawable/bg_overlay_orb"
         android:text=""
         android:gravity="center"
