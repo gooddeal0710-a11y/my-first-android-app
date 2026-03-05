@@ -1,20 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
-<shape xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- 背景（半透明黒） -->
-    <solid android:color="#66000000" />
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- 角丸 -->
-    <corners android:radius="12dp" />
+    <!-- 外側：白枠 -->
+    <item>
+        <shape android:shape="rectangle">
+            <corners android:radius="12dp" />
+            <solid android:color="#00000000" />
+            <stroke android:width="2dp" android:color="#88FFFFFF" />
+        </shape>
+    </item>
 
-    <!-- 白っぽい枠 -->
-    <stroke
-        android:width="1.5dp"
-        android:color="#88FFFFFF" />
+    <!-- 内側：背景（枠の内側に2dp分インセット） -->
+    <item
+        android:left="2dp"
+        android:top="2dp"
+        android:right="2dp"
+        android:bottom="2dp">
+        <shape android:shape="rectangle">
+            <corners android:radius="10dp" />
+            <solid android:color="#66000000" />
+        </shape>
+    </item>
 
-    <!-- 枠と文字が近いときのための内側余白（保険） -->
-    <padding
-        android:left="0dp"
-        android:top="0dp"
-        android:right="0dp"
-        android:bottom="0dp" />
-</shape>
+</layer-list>
