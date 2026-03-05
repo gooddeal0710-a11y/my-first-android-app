@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- 外側の薄い縁（リング） -->
     <item>
         <shape android:shape="oval">
             <size android:width="48dp" android:height="48dp" />
@@ -10,7 +9,6 @@
         </shape>
     </item>
 
-    <!-- 本体：上が少し明るい縦グラデーション -->
     <item android:left="2dp" android:top="2dp" android:right="2dp" android:bottom="2dp">
         <shape android:shape="oval">
             <gradient
@@ -22,7 +20,6 @@
         </shape>
     </item>
 
-    <!-- 内側のハイライト（小さめの光） -->
     <item android:left="8dp" android:top="7dp" android:right="18dp" android:bottom="20dp">
         <shape android:shape="oval">
             <gradient
