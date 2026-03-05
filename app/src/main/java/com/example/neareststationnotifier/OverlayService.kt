@@ -68,7 +68,7 @@ class OverlayService : Service() {
     private var updateCount = 0
     private val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.JAPAN)
 
-    @Volatile private var lastStationName: String = "--"
+    @Volatile private var lastStationsText: String = "--"
     @Volatile private var lastApiStatus: String = "api:idle"
     @Volatile private var lastStationUpdatedAtMs: Long = 0L
     private val stationUpdateIntervalMs = 10_000L
@@ -89,11 +89,11 @@ class OverlayService : Service() {
             val nowStr = timeFmt.format(Date())
 
             lastDisplayText = if (loc == null) {
-                "cnt:$updateCount $nowStr\nloc:null\n$lastApiStatus\nstation:$lastStationName"
+                "cnt:$updateCount $nowStr\nloc:null\n$lastApiStatus\nstations:\n$lastStationsText"
             } else {
                 val latStr = String.format(Locale.US, "%.5f", loc.latitude)
                 val lonStr = String.format(Locale.US, "%.5f", loc.longitude)
-                "cnt:$updateCount $nowStr\nlat:$latStr lon:$lonStr\n$lastApiStatus\nstation:$lastStationName"
+                "cnt:$updateCount $nowStr\nlat:$latStr lon:$lonStr\n$lastApiStatus\nstations:\n$lastStationsText"
             }
 
             if (isPanelShowing()) {
@@ -104,7 +104,7 @@ class OverlayService : Service() {
             val nowMs = System.currentTimeMillis()
             if (nowMs - lastStationUpdatedAtMs >= stationUpdateIntervalMs) {
                 lastStationUpdatedAtMs = nowMs
-                fetchNearestStationAsync(locNonNull.latitude, locNonNull.longitude)
+                fetchNearestStationsAsync(locNonNull.latitude, locNonNull.longitude)
             }
         }
     }
@@ -149,7 +149,7 @@ class OverlayService : Service() {
             clampDotInsideScreen()
         }
 
-        // ---- パネル（y=0、wrap_content、枠と文字のスキマは背景(layer-list) + paddingで確保） ----
+        // ---- パネル（y=0、wrap_content、余白は背景(layer-list) + paddingで確保） ----
         panelText = TextView(this).apply {
             text = "loading..."
             setTextColor(0xFFFFFFFF.toInt())
@@ -164,8 +164,7 @@ class OverlayService : Service() {
             includeFontPadding = false
             background = ContextCompat.getDrawable(this@OverlayService, R.drawable.bg_overlay_panel)
 
-            // 「最小幅固定」はしない。内容に合わせて伸縮。
-            // ただし画面からはみ出しすぎないように最大幅だけ制限（自然な余白確保に効く）
+            // 内容に合わせて伸縮。ただし画面からはみ出しすぎないよう最大幅だけ制限
             maxWidth = (resources.displayMetrics.widthPixels * 0.85f).toInt()
         }
 
@@ -185,7 +184,7 @@ class OverlayService : Service() {
         windowManager.addView(panelText, panelParams)
         panelText?.apply {
             alpha = 0f
-            translationX = -dp(260).toFloat()
+            translationX = -dp(360).toFloat()
             visibility = View.GONE
         }
 
@@ -208,6 +207,65 @@ class OverlayService : Service() {
             return
         }
         fused.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
+    }
+
+    // --- 近い駅3件を取得して距離(m)で整形 ---
+    private fun fetchNearestStationsAsync(lat: Double, lon: Double) {
+        thread(start = true) {
+            try {
+                lastApiStatus = "api:fetching"
+                val url = "https://express.heartrails.com/api/json?method=getStations&x=$lon&y=$lat"
+                val req = Request.Builder().url(url).get().build()
+
+                http.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) {
+                        lastApiStatus = "api:http${resp.code}"
+                        return@thread
+                    }
+
+                    val body = resp.body?.string().orEmpty()
+                    val json = JSONObject(body)
+                    val stationArr = json.optJSONObject("response")?.optJSONArray("station")
+
+                    val text = buildString {
+                        if (stationArr == null || stationArr.length() == 0) {
+                            append("--")
+                            return@buildString
+                        }
+                        val n = minOf(3, stationArr.length())
+                        for (i in 0 until n) {
+                            val st = stationArr.optJSONObject(i)
+                            val name = st?.optString("name", "--") ?: "--"
+                            val distStr = st?.optString("distance", "") ?: ""
+                            val metersText = formatDistanceToMeters(distStr)
+
+                            append("${i + 1}. $name ($metersText)")
+                            if (i != n - 1) append("\n")
+                        }
+                    }
+
+                    lastStationsText = text
+                    lastApiStatus = "api:ok"
+
+                    if (isPanelShowing()) {
+                        mainHandler.post { panelText?.text = lastDisplayText }
+                    }
+                }
+            } catch (_: Exception) {
+                lastApiStatus = "api:err"
+            }
+        }
+    }
+
+    // HeartRailsのdistanceはkm小数のことが多いので km→m 変換（mっぽい値も吸収）
+    private fun formatDistanceToMeters(distanceRaw: String): String {
+        val s = distanceRaw.trim()
+        val v = s.toDoubleOrNull() ?: return "--m"
+
+        // v < 10 は km とみなして m へ（近傍駅なら通常ここに入る）
+        val meters = if (v < 10.0) (v * 1000.0) else v
+        val mInt = meters.toInt().coerceAtLeast(0)
+        return "${mInt}m"
     }
 
     private fun updateScreenSizeCache() {
@@ -274,7 +332,7 @@ class OverlayService : Service() {
         v.visibility = View.VISIBLE
         v.animate().cancel()
 
-        // パネル幅が内容で変わるので、隠す距離は「十分大きめ」にしておく
+        // パネル幅が内容で変わるので、隠す距離は「十分大きめ」
         v.translationX = -dp(360).toFloat()
         v.alpha = 0f
 
@@ -398,37 +456,6 @@ class OverlayService : Service() {
         dotParams.y = min(max(dotParams.y, 0), max(screenH - h, 0))
 
         windowManager.updateViewLayout(dotView, dotParams)
-    }
-
-    private fun fetchNearestStationAsync(lat: Double, lon: Double) {
-        thread(start = true) {
-            try {
-                lastApiStatus = "api:fetching"
-                val url = "https://express.heartrails.com/api/json?method=getStations&x=$lon&y=$lat"
-                val req = Request.Builder().url(url).get().build()
-
-                http.newCall(req).execute().use { resp ->
-                    if (!resp.isSuccessful) {
-                        lastApiStatus = "api:http${resp.code}"
-                        return@thread
-                    }
-
-                    val body = resp.body?.string().orEmpty()
-                    val json = JSONObject(body)
-                    val stationArr = json.optJSONObject("response")?.optJSONArray("station")
-                    val name = stationArr?.optJSONObject(0)?.optString("name", "--") ?: "--"
-
-                    lastStationName = name
-                    lastApiStatus = "api:ok"
-
-                    if (isPanelShowing()) {
-                        mainHandler.post { panelText?.text = lastDisplayText }
-                    }
-                }
-            } catch (_: Exception) {
-                lastApiStatus = "api:err"
-            }
-        }
     }
 
     private fun hasLocationPermission(): Boolean {
