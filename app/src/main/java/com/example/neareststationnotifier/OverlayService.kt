@@ -5,7 +5,6 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
-import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.PixelFormat
@@ -31,9 +30,6 @@ import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -73,10 +69,10 @@ class OverlayService : Service() {
     @Volatile private var lastStationUpdatedAtMs: Long = 0L
     private val stationUpdateIntervalMs = 10_000L
 
-    private val http = OkHttpClient()
     @Volatile private var lastDisplayText: String = "loading..."
 
-    private val prefs by lazy { getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) }
+    private val stationApi by lazy { StationApi() }
+    private val overlayPrefs by lazy { OverlayPrefs(this) }
 
     // 画面サイズ変化（回転など）検知用
     private var lastScreenW = 0
@@ -113,7 +109,6 @@ class OverlayService : Service() {
         super.onCreate()
         startForeground(1, createNotification())
 
-        // オーバーレイ権限チェック → 無ければ設定へ
         if (!canDrawOverlays()) {
             openOverlayPermissionSettings()
             stopSelf()
@@ -135,7 +130,6 @@ class OverlayService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            // いったん仮置き（後でratioから復元）
             x = dp(24)
             y = dp(400)
         }
@@ -149,23 +143,17 @@ class OverlayService : Service() {
             clampDotInsideScreen()
         }
 
-        // ---- パネル（y=0、wrap_content、枠と文字のスキマは背景(layer-list) + paddingで確保） ----
+        // ---- パネル ----
         panelText = TextView(this).apply {
             text = "loading..."
             setTextColor(0xFFFFFFFF.toInt())
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-
-            // 余白（背景側のインセットと合算で効く）
             setPadding(dp(14), dp(12), dp(14), dp(12))
-
             maxLines = 14
             ellipsize = TextUtils.TruncateAt.END
             gravity = Gravity.START
             includeFontPadding = false
             background = ContextCompat.getDrawable(this@OverlayService, R.drawable.bg_overlay_panel)
-
-            // 最小幅固定はしない。内容に合わせて伸縮。
-            // ただし画面からはみ出しすぎないように最大幅だけ制限
             maxWidth = (resources.displayMetrics.widthPixels * 0.92f).toInt()
         }
 
@@ -181,7 +169,6 @@ class OverlayService : Service() {
             y = 0
         }
 
-        // パネルは常にaddViewして、アニメで出し入れ
         windowManager.addView(panelText, panelParams)
         panelText?.apply {
             alpha = 0f
@@ -195,8 +182,6 @@ class OverlayService : Service() {
                 updateScreenSizeCache()
                 restoreDotPositionFromRatioOrDefault()
                 clampDotInsideScreen()
-
-                // 回転で画面幅が変わるので、パネルのmaxWidthも更新
                 panelText?.maxWidth = (resources.displayMetrics.widthPixels * 0.92f).toInt()
             }
         }
@@ -210,107 +195,21 @@ class OverlayService : Service() {
         fused.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
     }
 
-    // -------------------------
-    // Nearest stations (top 3) + distance(m) + next/prev for each
-    // -------------------------
     private fun fetchNearestStationsAsync(lat: Double, lon: Double) {
         thread(start = true) {
             try {
                 lastApiStatus = "api:fetching"
-                val url = "https://express.heartrails.com/api/json?method=getStations&x=$lon&y=$lat"
-                val req = Request.Builder().url(url).get().build()
+                val list = stationApi.getNearestStations(lat, lon)
+                lastStationsText = StationFormatter.formatTop3WithNextPrev(list)
+                lastApiStatus = "api:ok"
 
-                http.newCall(req).execute().use { resp ->
-                    if (!resp.isSuccessful) {
-                        lastApiStatus = "api:http${resp.code}"
-                        return@thread
-                    }
-
-                    val body = resp.body?.string().orEmpty()
-                    val json = JSONObject(body)
-                    val stationArr = json.optJSONObject("response")?.optJSONArray("station")
-
-                    if (stationArr == null || stationArr.length() == 0) {
-                        lastStationsText = "--"
-                        lastApiStatus = "api:ok"
-                        return@use
-                    }
-
-                    // (name + line + company) が同じものは重複排除して3件埋める
-                    val seen = LinkedHashSet<String>()
-                    val lines = ArrayList<String>(3)
-
-                    for (i in 0 until stationArr.length()) {
-                        val st = stationArr.optJSONObject(i) ?: continue
-
-                        val name = st.optString("name", "--")
-                        val line = st.optString("line", "")
-                        val company = st.optString("company", "")
-
-                        val id = "$name|$line|$company"
-                        if (!seen.add(id)) continue
-
-                        val distRaw = pickDistanceRaw(st)
-                        val metersText = formatDistanceToMeters(distRaw)
-
-                        val next = st.optString("next", "")
-                        val prev = st.optString("prev", "")
-
-                        val suffix = buildString {
-                            if (line.isNotBlank()) append(" / $line")
-                            if (company.isNotBlank()) append(" / $company")
-                        }
-
-                        val np = buildString {
-                            // 表示が長くなりすぎないよう、空は出さない
-                            if (next.isNotBlank()) append("\n   next: $next")
-                            if (prev.isNotBlank()) append("\n   prev: $prev")
-                        }
-
-                        lines.add("${lines.size + 1}. $name ($metersText)$suffix$np")
-                        if (lines.size >= 3) break
-                    }
-
-                    lastStationsText = if (lines.isEmpty()) "--" else lines.joinToString("\n")
-                    lastApiStatus = "api:ok"
-
-                    if (isPanelShowing()) {
-                        mainHandler.post { panelText?.text = lastDisplayText }
-                    }
+                if (isPanelShowing()) {
+                    mainHandler.post { panelText?.text = lastDisplayText }
                 }
             } catch (_: Exception) {
                 lastApiStatus = "api:err"
             }
         }
-    }
-
-    private fun pickDistanceRaw(st: JSONObject): String {
-        val candidates = listOf(
-            "distance", "dist", "distance_km", "km", "meter", "meters", "m"
-        )
-        for (k in candidates) {
-            val v = st.optString(k, "")
-            if (v.isNotBlank()) return v
-        }
-        return ""
-    }
-
-    private fun formatDistanceToMeters(distanceRaw: String): String {
-        val s0 = distanceRaw.trim()
-        if (s0.isEmpty()) return "--m"
-
-        val lower = s0.lowercase(Locale.US)
-        val num = lower.replace("km", "").replace("m", "").trim()
-        val v = num.toDoubleOrNull() ?: return "--m"
-
-        val meters = when {
-            lower.contains("km") -> v * 1000.0
-            lower.contains("m") -> v
-            v < 10.0 -> v * 1000.0
-            else -> v
-        }
-
-        return "${meters.toInt().coerceAtLeast(0)}m"
     }
 
     // -------------------------
@@ -462,10 +361,9 @@ class OverlayService : Service() {
         val w = dotView?.width?.takeIf { it > 0 } ?: fallback
         val h = dotView?.height?.takeIf { it > 0 } ?: fallback
 
-        val xr = prefs.getFloat(KEY_DOT_XR, -1f)
-        val yr = prefs.getFloat(KEY_DOT_YR, -1f)
-
-        if (xr >= 0f && yr >= 0f) {
+        val ratio = overlayPrefs.loadDotRatio()
+        if (ratio != null) {
+            val (xr, yr) = ratio
             val maxX = max(screenW - w, 0)
             val maxY = max(screenH - h, 0)
             dotParams.x = (xr * maxX).toInt()
@@ -487,16 +385,14 @@ class OverlayService : Service() {
         val w = dotView?.width?.takeIf { it > 0 } ?: fallback
         val h = dotView?.height?.takeIf { it > 0 } ?: fallback
 
-        val maxX = max(screenW - w, 0)
-        val maxY = max(screenH - h, 0)
-
-        val xr = if (maxX == 0) 0f else dotParams.x.toFloat() / maxX.toFloat()
-        val yr = if (maxY == 0) 0f else dotParams.y.toFloat() / maxY.toFloat()
-
-        prefs.edit()
-            .putFloat(KEY_DOT_XR, xr.coerceIn(0f, 1f))
-            .putFloat(KEY_DOT_YR, yr.coerceIn(0f, 1f))
-            .apply()
+        overlayPrefs.saveDotRatio(
+            x = dotParams.x,
+            y = dotParams.y,
+            screenW = screenW,
+            screenH = screenH,
+            viewW = w,
+            viewH = h
+        )
     }
 
     private fun clampDotInsideScreen() {
@@ -523,8 +419,8 @@ class OverlayService : Service() {
         return fine == PackageManager.PERMISSION_GRANTED || coarse == PackageManager.PERMISSION_GRANTED
     }
 
-    private fun dp(v: Int): Int =
-        (v * resources.displayMetrics.density).toInt()
+    // dp() は UiUtil.kt の拡張関数を使う（this.dp(24) でもOK）
+    private fun dp(v: Int): Int = this.dp(v)
 
     // -------------------------
     // Lifecycle
@@ -533,7 +429,6 @@ class OverlayService : Service() {
         super.onDestroy()
         fused.removeLocationUpdates(locationCallback)
 
-        // 終了時にも保存（最後の状態を残す）
         if (::dotParams.isInitialized) saveDotPositionAsRatio()
 
         try { if (dotView?.parent != null) windowManager.removeView(dotView) } catch (_: Exception) {}
@@ -564,9 +459,4 @@ class OverlayService : Service() {
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .build()
     }
-
-    companion object {
-        private const val PREFS_NAME = "overlay_prefs"
-        private const val KEY_DOT_XR = "dot_x_ratio"
-        private const val KEY_DOT_YR = "dot_y_ratio"
- 
+}
