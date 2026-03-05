@@ -113,7 +113,6 @@ class OverlayService : Service() {
         super.onCreate()
         startForeground(1, createNotification())
 
-        // オーバーレイ権限チェック → 無ければ設定へ
         if (!canDrawOverlays()) {
             openOverlayPermissionSettings()
             stopSelf()
@@ -135,37 +134,29 @@ class OverlayService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            // いったん仮置き（後でratioから復元）
             x = dp(24)
             y = dp(400)
         }
 
         windowManager.addView(dotView, dotParams)
 
-        // 初回レイアウト後に、ratioから復元して画面内へ
         dotView?.post {
             updateScreenSizeCache()
             restoreDotPositionFromRatioOrDefault()
             clampDotInsideScreen()
         }
 
-        // ---- パネル（y=0、wrap_content、枠と文字のスキマは背景(layer-list) + paddingで確保） ----
+        // ---- パネル ----
         panelText = TextView(this).apply {
             text = "loading..."
             setTextColor(0xFFFFFFFF.toInt())
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-
-            // 余白（背景側のインセットと合算で効く）
             setPadding(dp(14), dp(12), dp(14), dp(12))
-
-            maxLines = 8
+            maxLines = 10
             ellipsize = TextUtils.TruncateAt.END
             gravity = Gravity.START
             includeFontPadding = false
             background = ContextCompat.getDrawable(this@OverlayService, R.drawable.bg_overlay_panel)
-
-            // 最小幅固定はしない。内容に合わせて伸縮。
-            // ただし画面からはみ出しすぎないように最大幅だけ制限
             maxWidth = (resources.displayMetrics.widthPixels * 0.90f).toInt()
         }
 
@@ -181,7 +172,6 @@ class OverlayService : Service() {
             y = 0
         }
 
-        // パネルは常にaddViewして、アニメで出し入れ
         windowManager.addView(panelText, panelParams)
         panelText?.apply {
             alpha = 0f
@@ -189,14 +179,11 @@ class OverlayService : Service() {
             visibility = View.GONE
         }
 
-        // 回転などで画面サイズが変わったら、ratioから再配置して端寄りを防ぐ
         dotView?.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
             if (screenSizeChanged()) {
                 updateScreenSizeCache()
                 restoreDotPositionFromRatioOrDefault()
                 clampDotInsideScreen()
-
-                // 回転で画面幅が変わるので、パネルのmaxWidthも更新
                 panelText?.maxWidth = (resources.displayMetrics.widthPixels * 0.90f).toInt()
             }
         }
@@ -210,42 +197,107 @@ class OverlayService : Service() {
         fused.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
     }
 
-    private fun updateScreenSizeCache() {
-        val m = resources.displayMetrics
-        lastScreenW = m.widthPixels
-        lastScreenH = m.heightPixels
-    }
+    // ---- ここが駅3件＋距離(m)＋重複排除＋デバッグ(keys表示) ----
+    private fun fetchNearestStationsAsync(lat: Double, lon: Double) {
+        thread(start = true) {
+            try {
+                lastApiStatus = "api:fetching"
+                val url = "https://express.heartrails.com/api/json?method=getStations&x=$lon&y=$lat"
+                val req = Request.Builder().url(url).get().build()
 
-    private fun screenSizeChanged(): Boolean {
-        val m = resources.displayMetrics
-        return (m.widthPixels != lastScreenW || m.heightPixels != lastScreenH)
-    }
+                http.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) {
+                        lastApiStatus = "api:http${resp.code}"
+                        return@thread
+                    }
 
-    private fun restoreDotPositionFromRatioOrDefault() {
-        val m = resources.displayMetrics
-        val screenW = m.widthPixels
-        val screenH = m.heightPixels
+                    val body = resp.body?.string().orEmpty()
+                    val json = JSONObject(body)
+                    val stationArr = json.optJSONObject("response")?.optJSONArray("station")
 
-        val fallback = dp(44)
-        val w = dotView?.width?.takeIf { it > 0 } ?: fallback
-        val h = dotView?.height?.takeIf { it > 0 } ?: fallback
+                    val first = stationArr?.optJSONObject(0)
+                    val keys = first?.keys()?.asSequence()?.joinToString(",") ?: "none"
 
-        val xr = prefs.getFloat(KEY_DOT_XR, -1f)
-        val yr = prefs.getFloat(KEY_DOT_YR, -1f)
+                    if (stationArr == null || stationArr.length() == 0) {
+                        lastStationsText = "--"
+                        lastApiStatus = "api:ok keys=$keys"
+                        return@use
+                    }
 
-        if (xr >= 0f && yr >= 0f) {
-            val maxX = max(screenW - w, 0)
-            val maxY = max(screenH - h, 0)
-            dotParams.x = (xr * maxX).toInt()
-            dotParams.y = (yr * maxY).toInt()
-            windowManager.updateViewLayout(dotView, dotParams)
-        } else {
-            dotParams.x = dp(24)
-            dotParams.y = dp(400)
-            windowManager.updateViewLayout(dotView, dotParams)
+                    // nameだけだと同名駅が重複して見えるので line/company も併記
+                    // さらに (name + line + company) が同じものは重複排除して3件埋める
+                    val seen = LinkedHashSet<String>()
+                    val lines = ArrayList<String>(3)
+
+                    for (i in 0 until stationArr.length()) {
+                        val st = stationArr.optJSONObject(i) ?: continue
+
+                        val name = st.optString("name", "--")
+                        val line = st.optString("line", "")
+                        val company = st.optString("company", "")
+
+                        val id = "$name|$line|$company"
+                        if (!seen.add(id)) continue
+
+                        val distRaw = pickDistanceRaw(st)
+                        val metersText = formatDistanceToMeters(distRaw)
+
+                        val suffix = buildString {
+                            if (line.isNotBlank()) append(" / $line")
+                            if (company.isNotBlank()) append(" / $company")
+                        }
+
+                        lines.add("${lines.size + 1}. $name ($metersText)$suffix")
+                        if (lines.size >= 3) break
+                    }
+
+                    lastStationsText = if (lines.isEmpty()) "--" else lines.joinToString("\n")
+                    lastApiStatus = "api:ok keys=$keys"
+
+                    if (isPanelShowing()) {
+                        mainHandler.post { panelText?.text = lastDisplayText }
+                    }
+                }
+            } catch (_: Exception) {
+                lastApiStatus = "api:err"
+            }
         }
     }
 
+    private fun pickDistanceRaw(st: JSONObject): String {
+        // HeartRailsの実データに合わせて候補を広めに拾う
+        // まずは distance を最優先、無ければそれっぽいキーを順に試す
+        val candidates = listOf(
+            "distance", "dist", "distance_km", "km", "meter", "meters", "m"
+        )
+        for (k in candidates) {
+            val v = st.optString(k, "")
+            if (v.isNotBlank()) return v
+        }
+        return ""
+    }
+
+    private fun formatDistanceToMeters(distanceRaw: String): String {
+        val s0 = distanceRaw.trim()
+        if (s0.isEmpty()) return "--m"
+
+        // "0.123", "0.123km", "123m" を吸収
+        val lower = s0.lowercase(Locale.US)
+        val num = lower.replace("km", "").replace("m", "").trim()
+        val v = num.toDoubleOrNull() ?: return "--m"
+
+        val meters = when {
+            lower.contains("km") -> v * 1000.0
+            lower.contains("m") -> v
+            // 単位なしは km 小数が多い前提で km 扱い
+            v < 10.0 -> v * 1000.0
+            else -> v
+        }
+
+        return "${meters.toInt().coerceAtLeast(0)}m"
+    }
+
+    // ---- Overlay permission ----
     private fun canDrawOverlays(): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this)
 
@@ -258,6 +310,7 @@ class OverlayService : Service() {
         startActivity(intent)
     }
 
+    // ---- Panel show/hide ----
     private fun isPanelShowing(): Boolean =
         panelText?.visibility == View.VISIBLE && (panelText?.alpha ?: 0f) > 0f
 
@@ -274,7 +327,6 @@ class OverlayService : Service() {
         v.visibility = View.VISIBLE
         v.animate().cancel()
 
-        // パネル幅が内容で変わるので、隠す距離は「十分大きめ」にしておく
         v.translationX = -dp(360).toFloat()
         v.alpha = 0f
 
@@ -298,6 +350,7 @@ class OverlayService : Service() {
             .start()
     }
 
+    // ---- Dot touch ----
     private inner class TapDragToggleTouchListener : View.OnTouchListener {
 
         private var dragging = false
@@ -364,6 +417,43 @@ class OverlayService : Service() {
         }
     }
 
+    // ---- Dot position persistence (ratio) ----
+    private fun updateScreenSizeCache() {
+        val m = resources.displayMetrics
+        lastScreenW = m.widthPixels
+        lastScreenH = m.heightPixels
+    }
+
+    private fun screenSizeChanged(): Boolean {
+        val m = resources.displayMetrics
+        return (m.widthPixels != lastScreenW || m.heightPixels != lastScreenH)
+    }
+
+    private fun restoreDotPositionFromRatioOrDefault() {
+        val m = resources.displayMetrics
+        val screenW = m.widthPixels
+        val screenH = m.heightPixels
+
+        val fallback = dp(44)
+        val w = dotView?.width?.takeIf { it > 0 } ?: fallback
+        val h = dotView?.height?.takeIf { it > 0 } ?: fallback
+
+        val xr = prefs.getFloat(KEY_DOT_XR, -1f)
+        val yr = prefs.getFloat(KEY_DOT_YR, -1f)
+
+        if (xr >= 0f && yr >= 0f) {
+            val maxX = max(screenW - w, 0)
+            val maxY = max(screenH - h, 0)
+            dotParams.x = (xr * maxX).toInt()
+            dotParams.y = (yr * maxY).toInt()
+            windowManager.updateViewLayout(dotView, dotParams)
+        } else {
+            dotParams.x = dp(24)
+            dotParams.y = dp(400)
+            windowManager.updateViewLayout(dotView, dotParams)
+        }
+    }
+
     private fun saveDotPositionAsRatio() {
         val m = resources.displayMetrics
         val screenW = m.widthPixels
@@ -400,66 +490,7 @@ class OverlayService : Service() {
         windowManager.updateViewLayout(dotView, dotParams)
     }
 
-    private fun fetchNearestStationsAsync(lat: Double, lon: Double) {
-        thread(start = true) {
-            try {
-                lastApiStatus = "api:fetching"
-                val url = "https://express.heartrails.com/api/json?method=getStations&x=$lon&y=$lat"
-                val req = Request.Builder().url(url).get().build()
-
-                http.newCall(req).execute().use { resp ->
-                    if (!resp.isSuccessful) {
-                        lastApiStatus = "api:http${resp.code}"
-                        return@thread
-                    }
-
-                    val body = resp.body?.string().orEmpty()
-                    val json = JSONObject(body)
-                    val stationArr = json.optJSONObject("response")?.optJSONArray("station")
-
-                    val listText = buildString {
-                        if (stationArr == null || stationArr.length() == 0) {
-                            append("--")
-                            return@buildString
-                        }
-                        val n = minOf(3, stationArr.length())
-                        for (i in 0 until n) {
-                            val st = stationArr.optJSONObject(i)
-                            val name = st?.optString("name", "--") ?: "--"
-                            val distStr = st?.optString("distance", "") ?: ""
-                            val metersText = formatDistanceToMeters(distStr)
-
-                            append("${i + 1}. $name ($metersText)")
-                            if (i != n - 1) append("\n")
-                        }
-                    }
-
-                    lastStationsText = listText
-                    lastApiStatus = "api:ok"
-
-                    if (isPanelShowing()) {
-                        mainHandler.post { panelText?.text = lastDisplayText }
-                    }
-                }
-            } catch (_: Exception) {
-                lastApiStatus = "api:err"
-            }
-        }
-    }
-
-    private fun formatDistanceToMeters(distanceRaw: String): String {
-        val s = distanceRaw.trim()
-        val v = s.toDoubleOrNull() ?: return "--m"
-
-        // HeartRailsはkm小数が多い想定。近傍駅で10km超は稀なので、
-        // v < 10 は km とみなして m へ。v >= 10 は m の可能性もあるのでそのままm扱い。
-        val meters = if (v < 10.0) (v * 1000.0) else v
-
-        // 四捨五入したいなら +0.5 してtoIntでもOK。ここは切り捨て。
-        val mInt = meters.toInt().coerceAtLeast(0)
-        return "${mInt}m"
-    }
-
+    // ---- Permissions ----
     private fun hasLocationPermission(): Boolean {
         val fine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
         val coarse = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
@@ -469,11 +500,11 @@ class OverlayService : Service() {
     private fun dp(v: Int): Int =
         (v * resources.displayMetrics.density).toInt()
 
+    // ---- Lifecycle ----
     override fun onDestroy() {
         super.onDestroy()
         fused.removeLocationUpdates(locationCallback)
 
-        // 終了時にも保存（最後の状態を残す）
         if (::dotParams.isInitialized) saveDotPositionAsRatio()
 
         try { if (dotView?.parent != null) windowManager.removeView(dotView) } catch (_: Exception) {}
