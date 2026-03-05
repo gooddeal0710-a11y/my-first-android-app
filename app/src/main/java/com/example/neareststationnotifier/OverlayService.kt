@@ -113,6 +113,7 @@ class OverlayService : Service() {
         super.onCreate()
         startForeground(1, createNotification())
 
+        // オーバーレイ権限チェック → 無ければ設定へ
         if (!canDrawOverlays()) {
             openOverlayPermissionSettings()
             stopSelf()
@@ -134,30 +135,38 @@ class OverlayService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
+            // いったん仮置き（後でratioから復元）
             x = dp(24)
             y = dp(400)
         }
 
         windowManager.addView(dotView, dotParams)
 
+        // 初回レイアウト後に、ratioから復元して画面内へ
         dotView?.post {
             updateScreenSizeCache()
             restoreDotPositionFromRatioOrDefault()
             clampDotInsideScreen()
         }
 
-        // ---- パネル ----
+        // ---- パネル（y=0、wrap_content、枠と文字のスキマは背景(layer-list) + paddingで確保） ----
         panelText = TextView(this).apply {
             text = "loading..."
             setTextColor(0xFFFFFFFF.toInt())
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+
+            // 余白（背景側のインセットと合算で効く）
             setPadding(dp(14), dp(12), dp(14), dp(12))
-            maxLines = 10
+
+            maxLines = 14
             ellipsize = TextUtils.TruncateAt.END
             gravity = Gravity.START
             includeFontPadding = false
             background = ContextCompat.getDrawable(this@OverlayService, R.drawable.bg_overlay_panel)
-            maxWidth = (resources.displayMetrics.widthPixels * 0.90f).toInt()
+
+            // 最小幅固定はしない。内容に合わせて伸縮。
+            // ただし画面からはみ出しすぎないように最大幅だけ制限
+            maxWidth = (resources.displayMetrics.widthPixels * 0.92f).toInt()
         }
 
         panelParams = WindowManager.LayoutParams(
@@ -172,6 +181,7 @@ class OverlayService : Service() {
             y = 0
         }
 
+        // パネルは常にaddViewして、アニメで出し入れ
         windowManager.addView(panelText, panelParams)
         panelText?.apply {
             alpha = 0f
@@ -179,12 +189,15 @@ class OverlayService : Service() {
             visibility = View.GONE
         }
 
+        // 回転などで画面サイズが変わったら、ratioから再配置して端寄りを防ぐ
         dotView?.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
             if (screenSizeChanged()) {
                 updateScreenSizeCache()
                 restoreDotPositionFromRatioOrDefault()
                 clampDotInsideScreen()
-                panelText?.maxWidth = (resources.displayMetrics.widthPixels * 0.90f).toInt()
+
+                // 回転で画面幅が変わるので、パネルのmaxWidthも更新
+                panelText?.maxWidth = (resources.displayMetrics.widthPixels * 0.92f).toInt()
             }
         }
 
@@ -197,7 +210,9 @@ class OverlayService : Service() {
         fused.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
     }
 
-    // ---- ここが駅3件＋距離(m)＋重複排除＋デバッグ(keys表示) ----
+    // -------------------------
+    // Nearest stations (top 3) + distance(m) + next/prev for each
+    // -------------------------
     private fun fetchNearestStationsAsync(lat: Double, lon: Double) {
         thread(start = true) {
             try {
@@ -215,17 +230,13 @@ class OverlayService : Service() {
                     val json = JSONObject(body)
                     val stationArr = json.optJSONObject("response")?.optJSONArray("station")
 
-                    val first = stationArr?.optJSONObject(0)
-                    val keys = first?.keys()?.asSequence()?.joinToString(",") ?: "none"
-
                     if (stationArr == null || stationArr.length() == 0) {
                         lastStationsText = "--"
-                        lastApiStatus = "api:ok keys=$keys"
+                        lastApiStatus = "api:ok"
                         return@use
                     }
 
-                    // nameだけだと同名駅が重複して見えるので line/company も併記
-                    // さらに (name + line + company) が同じものは重複排除して3件埋める
+                    // (name + line + company) が同じものは重複排除して3件埋める
                     val seen = LinkedHashSet<String>()
                     val lines = ArrayList<String>(3)
 
@@ -242,17 +253,26 @@ class OverlayService : Service() {
                         val distRaw = pickDistanceRaw(st)
                         val metersText = formatDistanceToMeters(distRaw)
 
+                        val next = st.optString("next", "")
+                        val prev = st.optString("prev", "")
+
                         val suffix = buildString {
                             if (line.isNotBlank()) append(" / $line")
                             if (company.isNotBlank()) append(" / $company")
                         }
 
-                        lines.add("${lines.size + 1}. $name ($metersText)$suffix")
+                        val np = buildString {
+                            // 表示が長くなりすぎないよう、空は出さない
+                            if (next.isNotBlank()) append("\n   next: $next")
+                            if (prev.isNotBlank()) append("\n   prev: $prev")
+                        }
+
+                        lines.add("${lines.size + 1}. $name ($metersText)$suffix$np")
                         if (lines.size >= 3) break
                     }
 
                     lastStationsText = if (lines.isEmpty()) "--" else lines.joinToString("\n")
-                    lastApiStatus = "api:ok keys=$keys"
+                    lastApiStatus = "api:ok"
 
                     if (isPanelShowing()) {
                         mainHandler.post { panelText?.text = lastDisplayText }
@@ -265,8 +285,6 @@ class OverlayService : Service() {
     }
 
     private fun pickDistanceRaw(st: JSONObject): String {
-        // HeartRailsの実データに合わせて候補を広めに拾う
-        // まずは distance を最優先、無ければそれっぽいキーを順に試す
         val candidates = listOf(
             "distance", "dist", "distance_km", "km", "meter", "meters", "m"
         )
@@ -281,7 +299,6 @@ class OverlayService : Service() {
         val s0 = distanceRaw.trim()
         if (s0.isEmpty()) return "--m"
 
-        // "0.123", "0.123km", "123m" を吸収
         val lower = s0.lowercase(Locale.US)
         val num = lower.replace("km", "").replace("m", "").trim()
         val v = num.toDoubleOrNull() ?: return "--m"
@@ -289,7 +306,6 @@ class OverlayService : Service() {
         val meters = when {
             lower.contains("km") -> v * 1000.0
             lower.contains("m") -> v
-            // 単位なしは km 小数が多い前提で km 扱い
             v < 10.0 -> v * 1000.0
             else -> v
         }
@@ -297,7 +313,9 @@ class OverlayService : Service() {
         return "${meters.toInt().coerceAtLeast(0)}m"
     }
 
-    // ---- Overlay permission ----
+    // -------------------------
+    // Overlay permission
+    // -------------------------
     private fun canDrawOverlays(): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this)
 
@@ -310,7 +328,9 @@ class OverlayService : Service() {
         startActivity(intent)
     }
 
-    // ---- Panel show/hide ----
+    // -------------------------
+    // Panel show/hide
+    // -------------------------
     private fun isPanelShowing(): Boolean =
         panelText?.visibility == View.VISIBLE && (panelText?.alpha ?: 0f) > 0f
 
@@ -350,7 +370,9 @@ class OverlayService : Service() {
             .start()
     }
 
-    // ---- Dot touch ----
+    // -------------------------
+    // Dot touch (tap toggle / drag move)
+    // -------------------------
     private inner class TapDragToggleTouchListener : View.OnTouchListener {
 
         private var dragging = false
@@ -417,7 +439,9 @@ class OverlayService : Service() {
         }
     }
 
-    // ---- Dot position persistence (ratio) ----
+    // -------------------------
+    // Dot position persistence (ratio)
+    // -------------------------
     private fun updateScreenSizeCache() {
         val m = resources.displayMetrics
         lastScreenW = m.widthPixels
@@ -490,7 +514,9 @@ class OverlayService : Service() {
         windowManager.updateViewLayout(dotView, dotParams)
     }
 
-    // ---- Permissions ----
+    // -------------------------
+    // Permissions
+    // -------------------------
     private fun hasLocationPermission(): Boolean {
         val fine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
         val coarse = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
@@ -500,11 +526,14 @@ class OverlayService : Service() {
     private fun dp(v: Int): Int =
         (v * resources.displayMetrics.density).toInt()
 
-    // ---- Lifecycle ----
+    // -------------------------
+    // Lifecycle
+    // -------------------------
     override fun onDestroy() {
         super.onDestroy()
         fused.removeLocationUpdates(locationCallback)
 
+        // 終了時にも保存（最後の状態を残す）
         if (::dotParams.isInitialized) saveDotPositionAsRatio()
 
         try { if (dotView?.parent != null) windowManager.removeView(dotView) } catch (_: Exception) {}
@@ -540,5 +569,4 @@ class OverlayService : Service() {
         private const val PREFS_NAME = "overlay_prefs"
         private const val KEY_DOT_XR = "dot_x_ratio"
         private const val KEY_DOT_YR = "dot_y_ratio"
-    }
-}
+ 
