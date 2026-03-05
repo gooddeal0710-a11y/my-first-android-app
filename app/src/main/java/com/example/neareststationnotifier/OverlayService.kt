@@ -76,9 +76,11 @@ class OverlayService : Service() {
     private val http = OkHttpClient()
     @Volatile private var lastDisplayText: String = "loading..."
 
-    private val prefs by lazy {
-        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-    }
+    private val prefs by lazy { getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) }
+
+    // 画面サイズ変化（回転など）検知用
+    private var lastScreenW = 0
+    private var lastScreenH = 0
 
     private val locationCallback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
@@ -111,7 +113,6 @@ class OverlayService : Service() {
         super.onCreate()
         startForeground(1, createNotification())
 
-        // 1) オーバーレイ権限チェック → 無ければ設定へ
         if (!canDrawOverlays()) {
             openOverlayPermissionSettings()
             stopSelf()
@@ -121,7 +122,7 @@ class OverlayService : Service() {
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         val inflater = LayoutInflater.from(this)
 
-        // ---- 玉（overlay_dot.xml：44dp） ----
+        // ---- 玉 ----
         dotView = inflater.inflate(R.layout.overlay_dot, null)
         txtDot = dotView?.findViewById(R.id.txtDot)
 
@@ -133,28 +134,36 @@ class OverlayService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-
-            // 2) 前回位置を復元（無ければデフォルト）
-            x = prefs.getInt(KEY_DOT_X, dp(24))
-            y = prefs.getInt(KEY_DOT_Y, dp(400))
+            // いったん仮置き（後でratioから復元）
+            x = dp(24)
+            y = dp(400)
         }
 
         windowManager.addView(dotView, dotParams)
-        dotView?.post { clampDotInsideScreen() }
 
-        // ---- 情報パネル（左上、角丸＋白枠、幅が縮まないようminWidth） ----
+        // 初回レイアウト後に、ratioから復元して画面内へ
+        dotView?.post {
+            updateScreenSizeCache()
+            restoreDotPositionFromRatioOrDefault()
+            clampDotInsideScreen()
+        }
+
+        // ---- パネル ----
         panelText = TextView(this).apply {
             text = "loading..."
             setTextColor(0xFFFFFFFF.toInt())
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-            setPadding(dp(12), dp(10), dp(12), dp(10))
+
+            // 余白を増やす（上下左右とも）
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+
             maxLines = 6
             ellipsize = TextUtils.TruncateAt.END
             gravity = Gravity.START
             includeFontPadding = false
             background = ContextCompat.getDrawable(this@OverlayService, R.drawable.bg_overlay_panel)
 
-            // 幅が小さくならない対策
+            // 幅が縮まない
             minWidth = dp(260)
         }
 
@@ -167,10 +176,10 @@ class OverlayService : Service() {
         ).apply {
             gravity = Gravity.TOP or Gravity.START
             x = 0
-            y = 0
+            // ステータスバーに近すぎるので少し下げる
+            y = dp(8)
         }
 
-        // パネルは常にaddViewして、アニメで出し入れ
         windowManager.addView(panelText, panelParams)
         panelText?.apply {
             alpha = 0f
@@ -178,7 +187,15 @@ class OverlayService : Service() {
             visibility = View.GONE
         }
 
-        // タップでトグル、ドラッグで移動（バウンド対策入り）
+        // 回転などで画面サイズが変わったら、ratioから再配置して端寄りを防ぐ
+        dotView?.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+            if (screenSizeChanged()) {
+                updateScreenSizeCache()
+                restoreDotPositionFromRatioOrDefault()
+                clampDotInsideScreen()
+            }
+        }
+
         txtDot?.setOnTouchListener(TapDragToggleTouchListener())
 
         if (!hasLocationPermission()) {
@@ -188,22 +205,52 @@ class OverlayService : Service() {
         fused.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
     }
 
-    private fun canDrawOverlays(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            Settings.canDrawOverlays(this)
+    private fun updateScreenSizeCache() {
+        val m = resources.displayMetrics
+        lastScreenW = m.widthPixels
+        lastScreenH = m.heightPixels
+    }
+
+    private fun screenSizeChanged(): Boolean {
+        val m = resources.displayMetrics
+        return (m.widthPixels != lastScreenW || m.heightPixels != lastScreenH)
+    }
+
+    private fun restoreDotPositionFromRatioOrDefault() {
+        val m = resources.displayMetrics
+        val screenW = m.widthPixels
+        val screenH = m.heightPixels
+
+        val fallback = dp(44)
+        val w = dotView?.width?.takeIf { it > 0 } ?: fallback
+        val h = dotView?.height?.takeIf { it > 0 } ?: fallback
+
+        val xr = prefs.getFloat(KEY_DOT_XR, -1f)
+        val yr = prefs.getFloat(KEY_DOT_YR, -1f)
+
+        if (xr >= 0f && yr >= 0f) {
+            val maxX = max(screenW - w, 0)
+            val maxY = max(screenH - h, 0)
+            dotParams.x = (xr * maxX).toInt()
+            dotParams.y = (yr * maxY).toInt()
+            windowManager.updateViewLayout(dotView, dotParams)
         } else {
-            true
+            // 初回はデフォルト位置
+            dotParams.x = dp(24)
+            dotParams.y = dp(400)
+            windowManager.updateViewLayout(dotView, dotParams)
         }
     }
+
+    private fun canDrawOverlays(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this)
 
     private fun openOverlayPermissionSettings() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
         val intent = Intent(
             Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
             Uri.parse("package:$packageName")
-        ).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
+        ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
         startActivity(intent)
     }
 
@@ -266,7 +313,6 @@ class OverlayService : Service() {
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     dragging = false
-
                     downRawX = event.rawX
                     downRawY = event.rawY
 
@@ -302,7 +348,7 @@ class OverlayService : Service() {
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     if (dragging) {
                         clampDotInsideScreen()
-                        saveDotPosition()
+                        saveDotPositionAsRatio()
                         return true
                     }
                     togglePanel()
@@ -313,10 +359,24 @@ class OverlayService : Service() {
         }
     }
 
-    private fun saveDotPosition() {
+    private fun saveDotPositionAsRatio() {
+        val m = resources.displayMetrics
+        val screenW = m.widthPixels
+        val screenH = m.heightPixels
+
+        val fallback = dp(44)
+        val w = dotView?.width?.takeIf { it > 0 } ?: fallback
+        val h = dotView?.height?.takeIf { it > 0 } ?: fallback
+
+        val maxX = max(screenW - w, 0)
+        val maxY = max(screenH - h, 0)
+
+        val xr = if (maxX == 0) 0f else dotParams.x.toFloat() / maxX.toFloat()
+        val yr = if (maxY == 0) 0f else dotParams.y.toFloat() / maxY.toFloat()
+
         prefs.edit()
-            .putInt(KEY_DOT_X, dotParams.x)
-            .putInt(KEY_DOT_Y, dotParams.y)
+            .putFloat(KEY_DOT_XR, xr.coerceIn(0f, 1f))
+            .putFloat(KEY_DOT_YR, yr.coerceIn(0f, 1f))
             .apply()
     }
 
@@ -379,8 +439,8 @@ class OverlayService : Service() {
         super.onDestroy()
         fused.removeLocationUpdates(locationCallback)
 
-        // 念のため終了時にも保存（ドラッグせず終了したケース）
-        if (::dotParams.isInitialized) saveDotPosition()
+        // 終了時にも保存（最後の状態を残す）
+        if (::dotParams.isInitialized) saveDotPositionAsRatio()
 
         try { if (dotView?.parent != null) windowManager.removeView(dotView) } catch (_: Exception) {}
         try { if (panelText?.parent != null) windowManager.removeView(panelText) } catch (_: Exception) {}
@@ -413,7 +473,7 @@ class OverlayService : Service() {
 
     companion object {
         private const val PREFS_NAME = "overlay_prefs"
-        private const val KEY_DOT_X = "dot_x"
-        private const val KEY_DOT_Y = "dot_y"
+        private const val KEY_DOT_XR = "dot_x_ratio"
+        private const val KEY_DOT_YR = "dot_y_ratio"
     }
 }
