@@ -43,22 +43,17 @@ class OverlayService : Service() {
 
     private lateinit var windowManager: WindowManager
 
-    // 移動する玉
     private var dotView: View? = null
     private var txtDot: TextView? = null
     private lateinit var dotParams: WindowManager.LayoutParams
 
-    // 左上に出す情報パネル（常にaddViewしてアニメで出し入れ）
     private var panelText: TextView? = null
     private lateinit var panelParams: WindowManager.LayoutParams
 
     private val mainHandler = Handler(Looper.getMainLooper())
-    @Volatile private var pinned: Boolean = false
-    private val autoHideRunnable = Runnable { if (!pinned) hidePanel() }
 
     private val fused by lazy { LocationServices.getFusedLocationProviderClient(this) }
 
-    // 位置更新：5秒
     private val intervalMs = 5000L
     private val locationRequest by lazy {
         LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, intervalMs)
@@ -92,7 +87,6 @@ class OverlayService : Service() {
                 "cnt:$updateCount $nowStr\nlat:$latStr lon:$lonStr\n$lastApiStatus\nstation:$lastStationName"
             }
 
-            // 表示中ならテキスト更新
             if (isPanelShowing()) {
                 mainHandler.post { panelText?.text = lastDisplayText }
             }
@@ -113,7 +107,7 @@ class OverlayService : Service() {
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         val inflater = LayoutInflater.from(this)
 
-        // ---- 玉（overlay_dot.xml を使う前提：44dp） ----
+        // ---- 玉（overlay_dot.xml：44dp） ----
         dotView = inflater.inflate(R.layout.overlay_dot, null)
         txtDot = dotView?.findViewById(R.id.txtDot)
 
@@ -130,11 +124,9 @@ class OverlayService : Service() {
         }
 
         windowManager.addView(dotView, dotParams)
-
-        // 初回レイアウト後に1回だけ画面内へ収める
         dotView?.post { clampDotInsideScreen() }
 
-        // ---- 情報パネル（左上固定、アニメで出し入れ） ----
+        // ---- 情報パネル（左上、角丸背景） ----
         panelText = TextView(this).apply {
             text = "loading..."
             setTextColor(0xFFFFFFFF.toInt())
@@ -144,13 +136,7 @@ class OverlayService : Service() {
             ellipsize = TextUtils.TruncateAt.END
             gravity = Gravity.START
             includeFontPadding = false
-            setBackgroundColor(0x66000000)
-
-            // タップで閉じる（固定解除）
-            setOnClickListener {
-                pinned = false
-                hidePanel()
-            }
+            background = ContextCompat.getDrawable(this@OverlayService, R.drawable.bg_overlay_panel)
         }
 
         panelParams = WindowManager.LayoutParams(
@@ -165,7 +151,7 @@ class OverlayService : Service() {
             y = 0
         }
 
-        // パネルは最初から追加しておき、アニメで表示/非表示
+        // パネルは常にaddViewして、アニメで出し入れ
         windowManager.addView(panelText, panelParams)
         panelText?.apply {
             alpha = 0f
@@ -173,43 +159,27 @@ class OverlayService : Service() {
             visibility = View.GONE
         }
 
-        // タップ/長押し/ドラッグを分離
-        txtDot?.setOnTouchListener(TapLongDragTouchListener())
+        // タップでトグル、ドラッグは従来通り
+        txtDot?.setOnTouchListener(TapDragToggleTouchListener())
 
         if (!hasLocationPermission()) {
             lastDisplayText = "位置情報権限なし"
             return
         }
-
         fused.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
     }
 
     private fun isPanelShowing(): Boolean =
         panelText?.visibility == View.VISIBLE && (panelText?.alpha ?: 0f) > 0f
 
-    private fun showPanelFor(ms: Long) {
-        pinned = false
-        mainHandler.removeCallbacks(autoHideRunnable)
-        animatePanelIn()
-        mainHandler.postDelayed(autoHideRunnable, ms)
-    }
-
-    private fun showPanelPinned() {
-        pinned = true
-        mainHandler.removeCallbacks(autoHideRunnable)
-        animatePanelIn()
-    }
-
-    private fun hidePanel() {
-        mainHandler.removeCallbacks(autoHideRunnable)
-        animatePanelOut()
+    private fun togglePanel() {
+        if (isPanelShowing()) animatePanelOut() else animatePanelIn()
     }
 
     private fun animatePanelIn() {
         val v = panelText ?: return
         v.text = lastDisplayText
 
-        // すでに表示中ならテキスト更新だけでOK
         if (v.visibility == View.VISIBLE && v.alpha >= 1f) return
 
         v.visibility = View.VISIBLE
@@ -239,16 +209,12 @@ class OverlayService : Service() {
     }
 
     /**
-     * バウンド対策：
-     * - DOWN時に View の screen座標を取っておき、MOVEは rawX/rawY の差分で追従
-     * - rawYの基準が端末都合で一瞬変わっても跳ねにくい
+     * - ドラッグ：バウンド対策（DOWN時のscreen座標＋raw差分）
+     * - タップ：パネルのトグル
      */
-    private inner class TapLongDragTouchListener : View.OnTouchListener {
+    private inner class TapDragToggleTouchListener : View.OnTouchListener {
 
         private var dragging = false
-        private var longPressed = false
-
-        private val longPressTimeout = ViewConfiguration.getLongPressTimeout().toLong()
         private val touchSlop = ViewConfiguration.get(this@OverlayService).scaledTouchSlop
 
         private var downRawX = 0f
@@ -262,19 +228,10 @@ class OverlayService : Service() {
 
         private val tmpLoc = IntArray(2)
 
-        private val longPressRunnable = Runnable {
-            if (!dragging) {
-                longPressed = true
-                pinned = true
-                showPanelPinned()
-            }
-        }
-
         override fun onTouch(v: View, event: MotionEvent): Boolean {
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     dragging = false
-                    longPressed = false
 
                     downRawX = event.rawX
                     downRawY = event.rawY
@@ -285,8 +242,6 @@ class OverlayService : Service() {
 
                     downParamX = dotParams.x
                     downParamY = dotParams.y
-
-                    mainHandler.postDelayed(longPressRunnable, longPressTimeout)
                     return true
                 }
 
@@ -296,7 +251,6 @@ class OverlayService : Service() {
 
                     if (!dragging && (abs(dx) > touchSlop || abs(dy) > touchSlop)) {
                         dragging = true
-                        mainHandler.removeCallbacks(longPressRunnable)
                     }
 
                     if (dragging) {
@@ -312,17 +266,12 @@ class OverlayService : Service() {
                 }
 
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    mainHandler.removeCallbacks(longPressRunnable)
-
                     if (dragging) {
                         clampDotInsideScreen()
                         return true
                     }
-
-                    if (longPressed) return true
-
-                    // 単押し：5秒表示
-                    showPanelFor(5000L)
+                    // タップ：トグル
+                    togglePanel()
                     return true
                 }
             }
@@ -335,7 +284,6 @@ class OverlayService : Service() {
         val screenW = metrics.widthPixels
         val screenH = metrics.heightPixels
 
-        // 初回は width/height が 0 のことがあるのでfallbackを44dpに
         val fallback = dp(44)
         val w = dotView?.width?.takeIf { it > 0 } ?: fallback
         val h = dotView?.height?.takeIf { it > 0 } ?: fallback
@@ -388,7 +336,6 @@ class OverlayService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        mainHandler.removeCallbacks(autoHideRunnable)
         fused.removeLocationUpdates(locationCallback)
 
         try { if (dotView?.parent != null) windowManager.removeView(dotView) } catch (_: Exception) {}
