@@ -43,12 +43,10 @@ class OverlayService : Service() {
 
     private lateinit var windowManager: WindowManager
 
-    // 移動する玉
     private var dotView: View? = null
     private var txtDot: TextView? = null
     private lateinit var dotParams: WindowManager.LayoutParams
 
-    // 上センターに出す情報パネル（コード生成）
     private var panelText: TextView? = null
     private lateinit var panelParams: WindowManager.LayoutParams
 
@@ -58,7 +56,6 @@ class OverlayService : Service() {
 
     private val fused by lazy { LocationServices.getFusedLocationProviderClient(this) }
 
-    // 位置更新：5秒
     private val intervalMs = 5000L
     private val locationRequest by lazy {
         LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, intervalMs)
@@ -112,7 +109,6 @@ class OverlayService : Service() {
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         val inflater = LayoutInflater.from(this)
 
-        // --- 玉（overlay_dot.xml を使う前提） ---
         dotView = inflater.inflate(R.layout.overlay_dot, null)
         txtDot = dotView?.findViewById(R.id.txtDot)
 
@@ -125,15 +121,14 @@ class OverlayService : Service() {
         ).apply {
             gravity = Gravity.TOP or Gravity.START
             x = dp(24)
-            y = dp(900)
+            y = dp(400)
         }
 
         windowManager.addView(dotView, dotParams)
 
-        // 初回レイアウト後に1回だけ画面内へ収める（初回ドラッグの跳ね対策）
+        // 初回レイアウト後に1回だけ画面内へ収める
         dotView?.post { clampDotInsideScreen() }
 
-        // --- 上センター情報パネル（コード生成） ---
         panelText = TextView(this).apply {
             text = "loading..."
             setTextColor(0xFFFFFFFF.toInt())
@@ -144,8 +139,6 @@ class OverlayService : Service() {
             gravity = Gravity.CENTER
             includeFontPadding = false
             setBackgroundColor(0x66000000)
-
-            // タップで閉じる（固定解除）
             setOnClickListener {
                 pinned = false
                 hidePanel()
@@ -163,14 +156,12 @@ class OverlayService : Service() {
             y = dp(80)
         }
 
-        // タップ/長押し/ドラッグを分離（ドラッグ時は表示しない）
         txtDot?.setOnTouchListener(TapLongDragTouchListener())
 
         if (!hasLocationPermission()) {
             lastDisplayText = "位置情報権限なし"
             return
         }
-
         fused.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
     }
 
@@ -195,15 +186,20 @@ class OverlayService : Service() {
     }
 
     private inner class TapLongDragTouchListener : View.OnTouchListener {
-        private var startX = 0
-        private var startY = 0
-        private var downRawX = 0f
-        private var downRawY = 0f
+
         private var dragging = false
         private var longPressed = false
 
         private val longPressTimeout = ViewConfiguration.getLongPressTimeout().toLong()
         private val touchSlop = ViewConfiguration.get(this@OverlayService).scaledTouchSlop
+
+        // 指が玉のどこを掴んだか（View内座標）
+        private var touchX = 0f
+        private var touchY = 0f
+
+        // DOWN時のraw（ドラッグ開始判定用）
+        private var downRawX = 0f
+        private var downRawY = 0f
 
         private val longPressRunnable = Runnable {
             if (!dragging) {
@@ -219,8 +215,10 @@ class OverlayService : Service() {
                     dragging = false
                     longPressed = false
 
-                    startX = dotParams.x
-                    startY = dotParams.y
+                    // View内の掴み位置を保持（これが縦方向の初動詰まり対策）
+                    touchX = event.x
+                    touchY = event.y
+
                     downRawX = event.rawX
                     downRawY = event.rawY
 
@@ -229,24 +227,18 @@ class OverlayService : Service() {
                 }
 
                 MotionEvent.ACTION_MOVE -> {
-                    val dx = (event.rawX - downRawX).toInt()
-                    val dy = (event.rawY - downRawY).toInt()
+                    val dx = event.rawX - downRawX
+                    val dy = event.rawY - downRawY
 
                     if (!dragging && (abs(dx) > touchSlop || abs(dy) > touchSlop)) {
                         dragging = true
                         mainHandler.removeCallbacks(longPressRunnable)
-
-                        // ドラッグ開始確定時点で基準点を取り直す（急な跳ね抑制）
-                        startX = dotParams.x
-                        startY = dotParams.y
-                        downRawX = event.rawX
-                        downRawY = event.rawY
-                        return true
                     }
 
                     if (dragging) {
-                        dotParams.x = startX + dx
-                        dotParams.y = startY + dy
+                        // raw座標 - 掴み位置 = 左上座標（params.x/y）
+                        dotParams.x = (event.rawX - touchX).toInt()
+                        dotParams.y = (event.rawY - touchY).toInt()
                         windowManager.updateViewLayout(dotView, dotParams)
                     }
                     return true
@@ -259,12 +251,8 @@ class OverlayService : Service() {
                         clampDotInsideScreen()
                         return true
                     }
+                    if (longPressed) return true
 
-                    if (longPressed) {
-                        return true
-                    }
-
-                    // 単押し
                     pinned = false
                     showPanelFor(5000L)
                     return true
@@ -279,7 +267,6 @@ class OverlayService : Service() {
         val screenW = metrics.widthPixels
         val screenH = metrics.heightPixels
 
-        // 初回は width/height が 0 のことがあるのでfallbackを48dpに
         val fallback = dp(48)
         val w = dotView?.width?.takeIf { it > 0 } ?: fallback
         val h = dotView?.height?.takeIf { it > 0 } ?: fallback
