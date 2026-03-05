@@ -7,6 +7,7 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.graphics.PixelFormat
 import android.net.Uri
 import android.os.Build
@@ -74,7 +75,6 @@ class OverlayService : Service() {
     private val stationApi by lazy { StationApi() }
     private val overlayPrefs by lazy { OverlayPrefs(this) }
 
-    // 画面サイズ変化（回転など）検知用
     private var lastScreenW = 0
     private var lastScreenH = 0
 
@@ -107,13 +107,22 @@ class OverlayService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        startForeground(1, createNotification())
 
+        // 1) Overlay権限が無いなら設定へ（サービスは終了）
         if (!canDrawOverlays()) {
             openOverlayPermissionSettings()
             stopSelf()
             return
         }
+
+        // 2) 位置情報権限が無いなら、location FGSを開始できないので終了
+        if (!hasLocationPermission()) {
+            stopSelf()
+            return
+        }
+
+        // 3) Android 14+ は type=location を明示して startForeground
+        startAsLocationFgs()
 
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         val inflater = LayoutInflater.from(this)
@@ -134,9 +143,13 @@ class OverlayService : Service() {
             y = dp(400)
         }
 
-        windowManager.addView(dotView, dotParams)
+        try {
+            if (dotView?.parent == null) windowManager.addView(dotView, dotParams)
+        } catch (_: Exception) {
+            stopSelf()
+            return
+        }
 
-        // 初回レイアウト後に、ratioから復元して画面内へ
         dotView?.post {
             updateScreenSizeCache()
             restoreDotPositionFromRatioOrDefault()
@@ -169,14 +182,19 @@ class OverlayService : Service() {
             y = 0
         }
 
-        windowManager.addView(panelText, panelParams)
+        try {
+            if (panelText?.parent == null) windowManager.addView(panelText, panelParams)
+        } catch (_: Exception) {
+            stopSelf()
+            return
+        }
+
         panelText?.apply {
             alpha = 0f
             translationX = -dp(360).toFloat()
             visibility = View.GONE
         }
 
-        // 回転などで画面サイズが変わったら、ratioから再配置して端寄りを防ぐ
         dotView?.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
             if (screenSizeChanged()) {
                 updateScreenSizeCache()
@@ -188,11 +206,17 @@ class OverlayService : Service() {
 
         txtDot?.setOnTouchListener(TapDragToggleTouchListener())
 
-        if (!hasLocationPermission()) {
-            lastDisplayText = "位置情報権限なし"
-            return
-        }
+        // 位置情報更新開始
         fused.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
+    }
+
+    private fun startAsLocationFgs() {
+        val n = createNotification()
+        if (Build.VERSION.SDK_INT >= 34) {
+            startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
+        } else {
+            startForeground(1, n)
+        }
     }
 
     private fun fetchNearestStationsAsync(lat: Double, lon: Double) {
@@ -212,9 +236,6 @@ class OverlayService : Service() {
         }
     }
 
-    // -------------------------
-    // Overlay permission
-    // -------------------------
     private fun canDrawOverlays(): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this)
 
@@ -227,9 +248,6 @@ class OverlayService : Service() {
         startActivity(intent)
     }
 
-    // -------------------------
-    // Panel show/hide
-    // -------------------------
     private fun isPanelShowing(): Boolean =
         panelText?.visibility == View.VISIBLE && (panelText?.alpha ?: 0f) > 0f
 
@@ -269,9 +287,6 @@ class OverlayService : Service() {
             .start()
     }
 
-    // -------------------------
-    // Dot touch (tap toggle / drag move)
-    // -------------------------
     private inner class TapDragToggleTouchListener : View.OnTouchListener {
 
         private var dragging = false
@@ -338,9 +353,6 @@ class OverlayService : Service() {
         }
     }
 
-    // -------------------------
-    // Dot position persistence (ratio)
-    // -------------------------
     private fun updateScreenSizeCache() {
         val m = resources.displayMetrics
         lastScreenW = m.widthPixels
@@ -410,26 +422,20 @@ class OverlayService : Service() {
         windowManager.updateViewLayout(dotView, dotParams)
     }
 
-    // -------------------------
-    // Permissions
-    // -------------------------
     private fun hasLocationPermission(): Boolean {
         val fine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
         val coarse = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
         return fine == PackageManager.PERMISSION_GRANTED || coarse == PackageManager.PERMISSION_GRANTED
     }
 
-    // dp() は UiUtil.kt の拡張関数を使う（this.dp(24) でもOK）
-    private fun dp(v: Int): Int = this.dp(v)
+    private fun dp(v: Int): Int =
+        (v * resources.displayMetrics.density).toInt()
 
-    // -------------------------
-    // Lifecycle
-    // -------------------------
     override fun onDestroy() {
         super.onDestroy()
         fused.removeLocationUpdates(locationCallback)
 
-        if (::dotParams.isInitialized) saveDotPositionAsRatio()
+        try { saveDotPositionAsRatio() } catch (_: Exception) {}
 
         try { if (dotView?.parent != null) windowManager.removeView(dotView) } catch (_: Exception) {}
         try { if (panelText?.parent != null) windowManager.removeView(panelText) } catch (_: Exception) {}
