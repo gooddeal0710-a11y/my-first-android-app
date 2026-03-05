@@ -150,8 +150,9 @@ class OverlayService : Service() {
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            y = dp(80)
+            gravity = Gravity.TOP or Gravity.START
+            x = dp(1)
+            y = dp(1)
         }
 
         txtDot?.setOnTouchListener(TapLongDragTouchListener())
@@ -281,7 +282,7 @@ class OverlayService : Service() {
         val screenW = metrics.widthPixels
         val screenH = metrics.heightPixels
 
-        val fallback = dp(48)
+        val fallback = dp(44)
         val w = dotView?.width?.takeIf { it > 0 } ?: fallback
         val h = dotView?.height?.takeIf { it > 0 } ?: fallback
 
