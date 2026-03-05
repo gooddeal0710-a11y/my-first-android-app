@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 背景（半透明黒） -->
+    <solid android:color="#66000000" />
+
+    <!-- 角丸 -->
+    <corners android:radius="12dp" />
+
+    <!-- 白っぽい枠 -->
+    <stroke
+        android:width="1.5dp"
+        android:color="#88FFFFFF" />
+
+    <!-- 枠と文字が近いときのための内側余白（保険） -->
+    <padding
+        android:left="0dp"
+        android:top="0dp"
+        android:right="0dp"
+        android:bottom="0dp" />
+</shape>
