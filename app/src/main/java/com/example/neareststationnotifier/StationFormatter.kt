@@ -2,7 +2,8 @@ package com.example.neareststationnotifier
 
 object StationFormatter {
 
-    fun formatTop3WithNextPrev(list: List<StationItem>): String {
+    // 駅名で重複排除して、上位3件だけ表示（距離/路線は最短の1件が残る）
+    fun formatTop3WithNextPrev(list: List<StationCandidate>): String {
         if (list.isEmpty()) return "--"
 
         val unique = distinctByStationNameKeepOrder(list).take(3)
@@ -10,16 +11,16 @@ object StationFormatter {
         return buildString {
             unique.forEachIndexed { idx, s ->
                 append("${idx + 1}. ${s.name}")
-                if (!s.distance.isNullOrBlank()) append("（${s.distance}）")
-                if (!s.line.isNullOrBlank()) append(" / ${s.line}")
+                if (s.distanceRaw.isNotBlank()) append("（${s.distanceRaw}）")
+                if (s.line.isNotBlank()) append(" / ${s.line}")
                 append("\n")
             }
         }.trimEnd()
     }
 
-    private fun distinctByStationNameKeepOrder(list: List<StationItem>): List<StationItem> {
+    private fun distinctByStationNameKeepOrder(list: List<StationCandidate>): List<StationCandidate> {
         val seen = HashSet<String>()
-        val out = ArrayList<StationItem>(list.size)
+        val out = ArrayList<StationCandidate>(list.size)
         for (s in list) {
             val key = stationKeyFromName(s.name)
             if (seen.add(key)) out.add(s)
@@ -27,15 +28,6 @@ object StationFormatter {
         return out
     }
 
-    /**
-     * 「見た目は同じ駅名なのに重複する」問題を潰すための強め正規化。
-     * - 前後空白除去
-     * - 全角空白→半角
-     * - 連続空白→1個
-     * - ゼロ幅系の不可視文字除去
-     * - "（...）" や "(...)" 以降を削除（駅名に余計な情報が混ざってるケース対策）
-     * - 末尾の「駅」を削除（"新宿駅" と "新宿" を同一扱い）
-     */
     private fun stationKeyFromName(raw: String): String {
         var s = raw
 
@@ -47,10 +39,10 @@ object StationFormatter {
             .replace("　", " ")
             .replace(Regex("\\s+"), " ")
 
-        // 括弧以降を落とす（駅名に路線等が混ざってる場合）
+        // 括弧以降を落とす（駅名に余計な情報が混ざってる場合対策）
         s = s.replace(Regex("[（(].*$"), "")
 
-        // 末尾の「駅」を落とす
+        // 末尾の「駅」を落とす（"新宿駅" と "新宿" を同一扱い）
         s = s.trim().removeSuffix("駅")
 
         return s
