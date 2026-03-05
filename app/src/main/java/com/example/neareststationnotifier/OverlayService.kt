@@ -125,8 +125,6 @@ class OverlayService : Service() {
         }
 
         windowManager.addView(dotView, dotParams)
-
-        // 初回レイアウト後に1回だけ画面内へ収める
         dotView?.post { clampDotInsideScreen() }
 
         panelText = TextView(this).apply {
@@ -193,13 +191,19 @@ class OverlayService : Service() {
         private val longPressTimeout = ViewConfiguration.getLongPressTimeout().toLong()
         private val touchSlop = ViewConfiguration.get(this@OverlayService).scaledTouchSlop
 
-        // 指が玉のどこを掴んだか（View内座標）
-        private var touchX = 0f
-        private var touchY = 0f
-
-        // DOWN時のraw（ドラッグ開始判定用）
+        // DOWN時点の指の位置（screen座標）
         private var downRawX = 0f
         private var downRawY = 0f
+
+        // DOWN時点のView左上（screen座標）
+        private var downViewScreenX = 0
+        private var downViewScreenY = 0
+
+        // DOWN時点のparams（保険）
+        private var downParamX = 0
+        private var downParamY = 0
+
+        private val tmpLoc = IntArray(2)
 
         private val longPressRunnable = Runnable {
             if (!dragging) {
@@ -215,12 +219,16 @@ class OverlayService : Service() {
                     dragging = false
                     longPressed = false
 
-                    // View内の掴み位置を保持（これが縦方向の初動詰まり対策）
-                    touchX = event.x
-                    touchY = event.y
-
                     downRawX = event.rawX
                     downRawY = event.rawY
+
+                    // Viewの左上(screen)を取る（これがバウンド対策の肝）
+                    v.getLocationOnScreen(tmpLoc)
+                    downViewScreenX = tmpLoc[0]
+                    downViewScreenY = tmpLoc[1]
+
+                    downParamX = dotParams.x
+                    downParamY = dotParams.y
 
                     mainHandler.postDelayed(longPressRunnable, longPressTimeout)
                     return true
@@ -236,9 +244,15 @@ class OverlayService : Service() {
                     }
 
                     if (dragging) {
-                        // raw座標 - 掴み位置 = 左上座標（params.x/y）
-                        dotParams.x = (event.rawX - touchX).toInt()
-                        dotParams.y = (event.rawY - touchY).toInt()
+                        // screen座標でのView左上を更新
+                        val newViewScreenX = downViewScreenX + dx
+                        val newViewScreenY = downViewScreenY + dy
+
+                        // paramsはTOP|START基準なので、そのままscreen左上相当として扱える端末が多い
+                        // もし端末差が出ても、DOWN時のparamsとの差分で追従するので跳ねにくい
+                        dotParams.x = (downParamX + (newViewScreenX - downViewScreenX)).toInt()
+                        dotParams.y = (downParamY + (newViewScreenY - downViewScreenY)).toInt()
+
                         windowManager.updateViewLayout(dotView, dotParams)
                     }
                     return true
