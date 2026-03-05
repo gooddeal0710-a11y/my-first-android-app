@@ -1,53 +1,58 @@
 package com.example.neareststationnotifier
 
-import java.util.Locale
-
 object StationFormatter {
 
-    fun formatTop3WithNextPrev(list: List<StationCandidate>): String {
+    /**
+     * 近い順のリストを受け取り、駅名で重複排除して上位3件を表示。
+     * ついでに「次/前」も同様に駅名で重複排除して表示。
+     */
+    fun formatTop3WithNextPrev(list: List<StationItem>): String {
         if (list.isEmpty()) return "--"
 
-        val seen = LinkedHashSet<String>()
-        val lines = ArrayList<String>(3)
+        // 1) 駅名で重複排除（順序は維持）
+        val unique = distinctByStationNameKeepOrder(list)
 
-        for (st in list) {
-            val id = "${st.name}|${st.line}|${st.company}"
-            if (!seen.add(id)) continue
+        // 2) 表示用に上位3件
+        val top = unique.take(3)
 
-            val metersText = formatDistanceToMeters(st.distanceRaw)
-
-            val suffix = buildString {
-                if (st.line.isNotBlank()) append(" / ${st.line}")
-                if (st.company.isNotBlank()) append(" / ${st.company}")
-            }
-
-            val np = buildString {
-                if (st.next.isNotBlank()) append("\n   next: ${st.next}")
-                if (st.prev.isNotBlank()) append("\n   prev: ${st.prev}")
-            }
-
-            lines.add("${lines.size + 1}. ${st.name} (${metersText})$suffix$np")
-            if (lines.size >= 3) break
+        val sb = StringBuilder()
+        top.forEachIndexed { idx, s ->
+            sb.append("${idx + 1}. ${s.name}")
+            if (!s.line.isNullOrBlank()) sb.append("（${s.line}）")
+            if (s.distanceMeters != null) sb.append("  ${s.distanceMeters}m")
+            sb.append("\n")
         }
 
-        return if (lines.isEmpty()) "--" else lines.joinToString("\n")
+        // 3) 次/前（任意：あなたの既存仕様に合わせて残してます）
+        val next = unique.getOrNull(3)
+        val prev = unique.getOrNull(4)
+
+        if (next != null) {
+            sb.append("\nnext: ${next.name}")
+            if (!next.line.isNullOrBlank()) sb.append("（${next.line}）")
+        }
+        if (prev != null) {
+            sb.append("\nprev: ${prev.name}")
+            if (!prev.line.isNullOrBlank()) sb.append("（${prev.line}）")
+        }
+
+        return sb.toString().trimEnd()
     }
 
-    fun formatDistanceToMeters(distanceRaw: String): String {
-        val s0 = distanceRaw.trim()
-        if (s0.isEmpty()) return "--m"
-
-        val lower = s0.lowercase(Locale.US)
-        val num = lower.replace("km", "").replace("m", "").trim()
-        val v = num.toDoubleOrNull() ?: return "--m"
-
-        val meters = when {
-            lower.contains("km") -> v * 1000.0
-            lower.contains("m") -> v
-            v < 10.0 -> v * 1000.0
-            else -> v
+    private fun distinctByStationNameKeepOrder(list: List<StationItem>): List<StationItem> {
+        val seen = HashSet<String>()
+        val out = ArrayList<StationItem>(list.size)
+        for (s in list) {
+            val key = normalizeStationName(s.name)
+            if (seen.add(key)) out.add(s)
         }
+        return out
+    }
 
-        return "${meters.toInt().coerceAtLeast(0)}m"
+    private fun normalizeStationName(name: String): String {
+        // 「駅」有無や空白差などを吸収したい場合はここで調整
+        return name.trim()
+            .replace("　", " ")
+            .replace(Regex("\\s+"), " ")
     }
 }
