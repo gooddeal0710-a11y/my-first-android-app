@@ -5,13 +5,16 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.PixelFormat
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.provider.Settings
 import android.text.TextUtils
 import android.util.TypedValue
 import android.view.Gravity
@@ -73,6 +76,10 @@ class OverlayService : Service() {
     private val http = OkHttpClient()
     @Volatile private var lastDisplayText: String = "loading..."
 
+    private val prefs by lazy {
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    }
+
     private val locationCallback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
             val loc = result.lastLocation
@@ -104,6 +111,13 @@ class OverlayService : Service() {
         super.onCreate()
         startForeground(1, createNotification())
 
+        // 1) オーバーレイ権限チェック → 無ければ設定へ
+        if (!canDrawOverlays()) {
+            openOverlayPermissionSettings()
+            stopSelf()
+            return
+        }
+
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         val inflater = LayoutInflater.from(this)
 
@@ -119,14 +133,16 @@ class OverlayService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = dp(24)
-            y = dp(400)
+
+            // 2) 前回位置を復元（無ければデフォルト）
+            x = prefs.getInt(KEY_DOT_X, dp(24))
+            y = prefs.getInt(KEY_DOT_Y, dp(400))
         }
 
         windowManager.addView(dotView, dotParams)
         dotView?.post { clampDotInsideScreen() }
 
-        // ---- 情報パネル（左上、角丸背景） ----
+        // ---- 情報パネル（左上、角丸＋白枠、幅が縮まないようminWidth） ----
         panelText = TextView(this).apply {
             text = "loading..."
             setTextColor(0xFFFFFFFF.toInt())
@@ -137,6 +153,9 @@ class OverlayService : Service() {
             gravity = Gravity.START
             includeFontPadding = false
             background = ContextCompat.getDrawable(this@OverlayService, R.drawable.bg_overlay_panel)
+
+            // 幅が小さくならない対策
+            minWidth = dp(260)
         }
 
         panelParams = WindowManager.LayoutParams(
@@ -159,7 +178,7 @@ class OverlayService : Service() {
             visibility = View.GONE
         }
 
-        // タップでトグル、ドラッグは従来通り
+        // タップでトグル、ドラッグで移動（バウンド対策入り）
         txtDot?.setOnTouchListener(TapDragToggleTouchListener())
 
         if (!hasLocationPermission()) {
@@ -167,6 +186,25 @@ class OverlayService : Service() {
             return
         }
         fused.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
+    }
+
+    private fun canDrawOverlays(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            Settings.canDrawOverlays(this)
+        } else {
+            true
+        }
+    }
+
+    private fun openOverlayPermissionSettings() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        val intent = Intent(
+            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+            Uri.parse("package:$packageName")
+        ).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(intent)
     }
 
     private fun isPanelShowing(): Boolean =
@@ -208,10 +246,6 @@ class OverlayService : Service() {
             .start()
     }
 
-    /**
-     * - ドラッグ：バウンド対策（DOWN時のscreen座標＋raw差分）
-     * - タップ：パネルのトグル
-     */
     private inner class TapDragToggleTouchListener : View.OnTouchListener {
 
         private var dragging = false
@@ -268,15 +302,22 @@ class OverlayService : Service() {
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     if (dragging) {
                         clampDotInsideScreen()
+                        saveDotPosition()
                         return true
                     }
-                    // タップ：トグル
                     togglePanel()
                     return true
                 }
             }
             return false
         }
+    }
+
+    private fun saveDotPosition() {
+        prefs.edit()
+            .putInt(KEY_DOT_X, dotParams.x)
+            .putInt(KEY_DOT_Y, dotParams.y)
+            .apply()
     }
 
     private fun clampDotInsideScreen() {
@@ -338,6 +379,9 @@ class OverlayService : Service() {
         super.onDestroy()
         fused.removeLocationUpdates(locationCallback)
 
+        // 念のため終了時にも保存（ドラッグせず終了したケース）
+        if (::dotParams.isInitialized) saveDotPosition()
+
         try { if (dotView?.parent != null) windowManager.removeView(dotView) } catch (_: Exception) {}
         try { if (panelText?.parent != null) windowManager.removeView(panelText) } catch (_: Exception) {}
 
@@ -365,5 +409,11 @@ class OverlayService : Service() {
             .setContentText("位置情報を表示中（${intervalMs}ms / HIGH）")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .build()
+    }
+
+    companion object {
+        private const val PREFS_NAME = "overlay_prefs"
+        private const val KEY_DOT_X = "dot_x"
+        private const val KEY_DOT_Y = "dot_y"
     }
 }
