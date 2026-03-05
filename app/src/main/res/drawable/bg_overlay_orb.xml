@@ -4,7 +4,7 @@
     <!-- 外側の薄い縁（リング） -->
     <item>
         <shape android:shape="oval">
-            <size android:width="56dp" android:height="56dp" />
+            <size android:width="48dp" android:height="48dp" />
             <solid android:color="#00000000" />
             <stroke android:width="2dp" android:color="#55FFFFFF" />
         </shape>
@@ -23,7 +23,7 @@
     </item>
 
     <!-- 内側のハイライト（小さめの光） -->
-    <item android:left="10dp" android:top="8dp" android:right="22dp" android:bottom="26dp">
+    <item android:left="8dp" android:top="7dp" android:right="18dp" android:bottom="20dp">
         <shape android:shape="oval">
             <gradient
                 android:angle="270"
