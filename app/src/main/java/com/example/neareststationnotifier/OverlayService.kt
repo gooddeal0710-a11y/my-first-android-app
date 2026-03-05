@@ -113,6 +113,7 @@ class OverlayService : Service() {
         super.onCreate()
         startForeground(1, createNotification())
 
+        // オーバーレイ権限チェック → 無ければ設定へ
         if (!canDrawOverlays()) {
             openOverlayPermissionSettings()
             stopSelf()
@@ -148,14 +149,14 @@ class OverlayService : Service() {
             clampDotInsideScreen()
         }
 
-        // ---- パネル ----
+        // ---- パネル（y=0、wrap_content、枠と文字のスキマは背景(layer-list) + paddingで確保） ----
         panelText = TextView(this).apply {
             text = "loading..."
             setTextColor(0xFFFFFFFF.toInt())
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
 
-            // 余白を増やす（上下左右とも）
-            setPadding(dp(16), dp(12), dp(16), dp(12))
+            // 余白（背景側のインセットと合算で効く）
+            setPadding(dp(14), dp(12), dp(14), dp(12))
 
             maxLines = 6
             ellipsize = TextUtils.TruncateAt.END
@@ -163,8 +164,9 @@ class OverlayService : Service() {
             includeFontPadding = false
             background = ContextCompat.getDrawable(this@OverlayService, R.drawable.bg_overlay_panel)
 
-            // 幅が縮まない
-            minWidth = dp(260)
+            // 「最小幅固定」はしない。内容に合わせて伸縮。
+            // ただし画面からはみ出しすぎないように最大幅だけ制限（自然な余白確保に効く）
+            maxWidth = (resources.displayMetrics.widthPixels * 0.85f).toInt()
         }
 
         panelParams = WindowManager.LayoutParams(
@@ -176,10 +178,10 @@ class OverlayService : Service() {
         ).apply {
             gravity = Gravity.TOP or Gravity.START
             x = 0
-            // ステータスバーに近すぎるので少し下げる
-            y = dp(8)
+            y = 0
         }
 
+        // パネルは常にaddViewして、アニメで出し入れ
         windowManager.addView(panelText, panelParams)
         panelText?.apply {
             alpha = 0f
@@ -193,6 +195,9 @@ class OverlayService : Service() {
                 updateScreenSizeCache()
                 restoreDotPositionFromRatioOrDefault()
                 clampDotInsideScreen()
+
+                // 回転で画面幅が変わるので、パネルのmaxWidthも更新
+                panelText?.maxWidth = (resources.displayMetrics.widthPixels * 0.85f).toInt()
             }
         }
 
@@ -235,7 +240,6 @@ class OverlayService : Service() {
             dotParams.y = (yr * maxY).toInt()
             windowManager.updateViewLayout(dotView, dotParams)
         } else {
-            // 初回はデフォルト位置
             dotParams.x = dp(24)
             dotParams.y = dp(400)
             windowManager.updateViewLayout(dotView, dotParams)
@@ -270,7 +274,8 @@ class OverlayService : Service() {
         v.visibility = View.VISIBLE
         v.animate().cancel()
 
-        v.translationX = -dp(260).toFloat()
+        // パネル幅が内容で変わるので、隠す距離は「十分大きめ」にしておく
+        v.translationX = -dp(360).toFloat()
         v.alpha = 0f
 
         v.animate()
@@ -286,7 +291,7 @@ class OverlayService : Service() {
 
         v.animate().cancel()
         v.animate()
-            .translationX(-dp(260).toFloat())
+            .translationX(-dp(360).toFloat())
             .alpha(0f)
             .setDuration(180L)
             .withEndAction { v.visibility = View.GONE }
