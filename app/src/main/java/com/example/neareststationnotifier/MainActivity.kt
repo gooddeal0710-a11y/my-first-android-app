@@ -3,8 +3,10 @@ package com.example.neareststationnotifier
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -32,15 +34,37 @@ class MainActivity : ComponentActivity() {
         private const val KEY_OVERLAY_DEBUG = "pref_overlay_debug"
     }
 
+    // 「開始ボタンが押された」状態を保持して、権限許可後に自動で再開する
+    private var pendingStartOverlay = false
+
     private val requestLocationPerms =
-        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { _ ->
-            // 許可/不許可どちらでも、ボタンをもう一度押してもらう前提（ここでは自動起動しない）
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+            val granted = (result[Manifest.permission.ACCESS_FINE_LOCATION] == true) ||
+                (result[Manifest.permission.ACCESS_COARSE_LOCATION] == true)
+
+            if (pendingStartOverlay && granted) {
+                startOverlayServiceSafely()
+            } else {
+                pendingStartOverlay = false
+            }
         }
 
     private val requestPostNotifications =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { _ ->
-            // 同上
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (pendingStartOverlay && granted) {
+                startOverlayServiceSafely()
+            } else {
+                pendingStartOverlay = false
+            }
         }
+
+    override fun onResume() {
+        super.onResume()
+        // オーバーレイ権限画面から戻ってきた時に自動で再開
+        if (pendingStartOverlay) {
+            startOverlayServiceSafely()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -51,11 +75,8 @@ class MainActivity : ComponentActivity() {
             val crashTextState = remember { mutableStateOf(CrashLogger.read(this)) }
             val scrollState = rememberScrollState()
 
-            // 保存済みのデバッグ設定を読み込み（デフォルトは true = デバッグ表示あり）
             val prefs = remember { getSharedPreferences(PREFS_NAME, MODE_PRIVATE) }
-            val debugState = remember {
-                mutableStateOf(prefs.getBoolean(KEY_OVERLAY_DEBUG, true))
-            }
+            val debugState = remember { mutableStateOf(prefs.getBoolean(KEY_OVERLAY_DEBUG, true)) }
 
             NearestStationNotifierTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
@@ -103,14 +124,20 @@ class MainActivity : ComponentActivity() {
                             )
 
                             Button(
-                                onClick = { startOverlayServiceSafely() },
+                                onClick = {
+                                    pendingStartOverlay = true
+                                    startOverlayServiceSafely()
+                                },
                                 modifier = Modifier.padding(top = 12.dp)
                             ) {
                                 Text("オーバーレイ開始")
                             }
 
                             Button(
-                                onClick = { stopOverlayService() },
+                                onClick = {
+                                    pendingStartOverlay = false
+                                    stopOverlayService()
+                                },
                                 modifier = Modifier.padding(top = 8.dp)
                             ) {
                                 Text("オーバーレイ停止")
@@ -123,7 +150,13 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startOverlayServiceSafely() {
-        // 1) Android 13+ 通知権限（無ければリクエストして終了）
+        // 0) Overlay権限（無ければ設定へ）
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
+            openOverlayPermissionScreen()
+            return
+        }
+
+        // 1) Android 13+ 通知権限（無ければリクエスト）
         if (Build.VERSION.SDK_INT >= 33) {
             val granted = ContextCompat.checkSelfPermission(
                 this,
@@ -135,7 +168,7 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // 2) 位置情報権限（無ければリクエストして終了）
+        // 2) 位置情報権限（無ければリクエスト）
         if (!hasLocationPermission()) {
             requestLocationPerms.launch(
                 arrayOf(
@@ -147,6 +180,7 @@ class MainActivity : ComponentActivity() {
         }
 
         // 3) ここまで揃って初めてサービス起動
+        pendingStartOverlay = false
         val intent = Intent(this, OverlayService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(intent)
@@ -159,6 +193,18 @@ class MainActivity : ComponentActivity() {
         val fine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
         val coarse = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
         return fine == PackageManager.PERMISSION_GRANTED || coarse == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun openOverlayPermissionScreen() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val intent = Intent(
+                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:$packageName")
+            ).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
+        }
     }
 
     private fun stopOverlayService() {
