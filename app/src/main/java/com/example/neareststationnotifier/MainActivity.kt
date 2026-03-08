@@ -3,10 +3,8 @@ package com.example.neareststationnotifier
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -80,13 +78,6 @@ class MainActivity : ComponentActivity() {
                             Text(text = "\nクラッシュログはありません。\n")
 
                             Button(
-                                onClick = { openOverlayPermissionScreen() },
-                                modifier = Modifier.padding(top = 8.dp)
-                            ) {
-                                Text("上に表示（オーバーレイ）許可画面を開く")
-                            }
-
-                            Button(
                                 onClick = { startOverlayServiceSafely() },
                                 modifier = Modifier.padding(top = 8.dp)
                             ) {
@@ -107,13 +98,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startOverlayServiceSafely() {
-        // 1) Overlay権限が無いなら設定へ（ここではサービス起動しない）
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
-            openOverlayPermissionScreen()
-            return
-        }
-
-        // 2) Android 13+ 通知権限（無ければリクエストして終了）
+        // 1) Android 13+ 通知権限（無ければリクエストして終了）
         if (Build.VERSION.SDK_INT >= 33) {
             val granted = ContextCompat.checkSelfPermission(
                 this,
@@ -125,7 +110,7 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // 3) 位置情報権限（無ければリクエストして終了）
+        // 2) 位置情報権限（無ければリクエストして終了）
         if (!hasLocationPermission()) {
             requestLocationPerms.launch(
                 arrayOf(
@@ -136,7 +121,7 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        // 4) ここまで揃って初めてサービス起動
+        // 3) ここまで揃って初めてサービス起動
         val intent = Intent(this, OverlayService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(intent)
@@ -149,18 +134,6 @@ class MainActivity : ComponentActivity() {
         val fine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
         val coarse = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
         return fine == PackageManager.PERMISSION_GRANTED || coarse == PackageManager.PERMISSION_GRANTED
-    }
-
-    private fun openOverlayPermissionScreen() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val intent = Intent(
-                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                Uri.parse("package:$packageName")
-            ).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            startActivity(intent)
-        }
     }
 
     private fun stopOverlayService() {
