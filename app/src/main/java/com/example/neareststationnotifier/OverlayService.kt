@@ -106,115 +106,114 @@ class OverlayService : Service() {
     }
 
     override fun onCreate() {
-    super.onCreate()
+        super.onCreate()
 
-    // ★最優先：とにかく最速でForeground化（時間切れクラッシュ回避）
-    try {
-        startAsLocationFgs()
-    } catch (_: Exception) {
-        // ここで落ちるなら継続不能なので終了
-        stopSelf()
-        return
-    }
+        // ★最優先：とにかく最速でForeground化（時間切れクラッシュ回避）
+        try {
+            startAsLocationFgs()
+        } catch (_: Exception) {
+            stopSelf()
+            return
+        }
 
-    // 1) Overlay権限が無いなら設定へ（サービスは終了）
-    if (!canDrawOverlays()) {
-        openOverlayPermissionSettings()
-        stopSelf()
-        return
-    }
+        // 1) Overlay権限が無いなら設定へ（サービスは終了）
+        if (!canDrawOverlays()) {
+            openOverlayPermissionSettings()
+            stopSelf()
+            return
+        }
 
-    // 2) 位置情報権限が無いなら終了
-    if (!hasLocationPermission()) {
-        stopSelf()
-        return
-    }
+        // 2) 位置情報権限が無いなら、location FGSを開始できないので終了
+        if (!hasLocationPermission()) {
+            stopSelf()
+            return
+        }
 
-    windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-    val inflater = LayoutInflater.from(this)
+        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        val inflater = LayoutInflater.from(this)
 
-    // ---- 玉 ----
-    dotView = inflater.inflate(R.layout.overlay_dot, null)
-    txtDot = dotView?.findViewById(R.id.txtDot)
+        // ---- 玉 ----
+        dotView = inflater.inflate(R.layout.overlay_dot, null)
+        txtDot = dotView?.findViewById(R.id.txtDot)
 
-    dotParams = WindowManager.LayoutParams(
-        WindowManager.LayoutParams.WRAP_CONTENT,
-        WindowManager.LayoutParams.WRAP_CONTENT,
-        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-        PixelFormat.TRANSLUCENT
-    ).apply {
-        gravity = Gravity.TOP or Gravity.START
-        x = dp(24)
-        y = dp(400)
-    }
+        dotParams = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = dp(24)
+            y = dp(400)
+        }
 
-    try {
-        if (dotView?.parent == null) windowManager.addView(dotView, dotParams)
-    } catch (_: Exception) {
-        stopSelf()
-        return
-    }
+        try {
+            if (dotView?.parent == null) windowManager.addView(dotView, dotParams)
+        } catch (_: Exception) {
+            stopSelf()
+            return
+        }
 
-    dotView?.post {
-        updateScreenSizeCache()
-        restoreDotPositionFromRatioOrDefault()
-        clampDotInsideScreen()
-    }
-
-    // ---- パネル ----
-    panelText = TextView(this).apply {
-        text = "loading..."
-        setTextColor(0xFFFFFFFF.toInt())
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-        setPadding(dp(14), dp(12), dp(14), dp(12))
-        maxLines = 14
-        ellipsize = TextUtils.TruncateAt.END
-        gravity = Gravity.START
-        includeFontPadding = false
-        background = ContextCompat.getDrawable(this@OverlayService, R.drawable.bg_overlay_panel)
-        maxWidth = (resources.displayMetrics.widthPixels * 0.92f).toInt()
-    }
-
-    panelParams = WindowManager.LayoutParams(
-        WindowManager.LayoutParams.WRAP_CONTENT,
-        WindowManager.LayoutParams.WRAP_CONTENT,
-        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-        PixelFormat.TRANSLUCENT
-    ).apply {
-        gravity = Gravity.TOP or Gravity.START
-        x = 0
-        y = 0
-    }
-
-    try {
-        if (panelText?.parent == null) windowManager.addView(panelText, panelParams)
-    } catch (_: Exception) {
-        stopSelf()
-        return
-    }
-
-    panelText?.apply {
-        alpha = 0f
-        translationX = -dp(360).toFloat()
-        visibility = View.GONE
-    }
-
-    dotView?.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-        if (screenSizeChanged()) {
+        dotView?.post {
             updateScreenSizeCache()
             restoreDotPositionFromRatioOrDefault()
             clampDotInsideScreen()
-            panelText?.maxWidth = (resources.displayMetrics.widthPixels * 0.92f).toInt()
         }
+
+        // ---- パネル ----
+        panelText = TextView(this).apply {
+            text = "loading..."
+            setTextColor(0xFFFFFFFF.toInt())
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            maxLines = 14
+            ellipsize = TextUtils.TruncateAt.END
+            gravity = Gravity.START
+            includeFontPadding = false
+            background = ContextCompat.getDrawable(this@OverlayService, R.drawable.bg_overlay_panel)
+            maxWidth = (resources.displayMetrics.widthPixels * 0.92f).toInt()
+        }
+
+        panelParams = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = 0
+            y = 0
+        }
+
+        try {
+            if (panelText?.parent == null) windowManager.addView(panelText, panelParams)
+        } catch (_: Exception) {
+            stopSelf()
+            return
+        }
+
+        panelText?.apply {
+            alpha = 0f
+            translationX = -dp(360).toFloat()
+            visibility = View.GONE
+        }
+
+        dotView?.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+            if (screenSizeChanged()) {
+                updateScreenSizeCache()
+                restoreDotPositionFromRatioOrDefault()
+                clampDotInsideScreen()
+                panelText?.maxWidth = (resources.displayMetrics.widthPixels * 0.92f).toInt()
+            }
+        }
+
+        txtDot?.setOnTouchListener(TapDragToggleTouchListener())
+
+        // 位置情報更新開始
+        fused.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
     }
-
-    txtDot?.setOnTouchListener(TapDragToggleTouchListener())
-
-    // 位置情報更新開始
-    fused.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
-}
 
     private fun startAsLocationFgs() {
         val n = createNotification()
