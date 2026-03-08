@@ -16,6 +16,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -25,6 +26,11 @@ import androidx.core.content.ContextCompat
 import com.example.neareststationnotifier.ui.theme.NearestStationNotifierTheme
 
 class MainActivity : ComponentActivity() {
+
+    companion object {
+        private const val PREFS_NAME = "prefs"
+        private const val KEY_OVERLAY_DEBUG = "pref_overlay_debug"
+    }
 
     private val requestLocationPerms =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { _ ->
@@ -44,6 +50,12 @@ class MainActivity : ComponentActivity() {
         setContent {
             val crashTextState = remember { mutableStateOf(CrashLogger.read(this)) }
             val scrollState = rememberScrollState()
+
+            // 保存済みのデバッグ設定を読み込み（デフォルトは true = デバッグ表示あり）
+            val prefs = remember { getSharedPreferences(PREFS_NAME, MODE_PRIVATE) }
+            val debugState = remember {
+                mutableStateOf(prefs.getBoolean(KEY_OVERLAY_DEBUG, true))
+            }
 
             NearestStationNotifierTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
@@ -77,9 +89,22 @@ class MainActivity : ComponentActivity() {
                         } else {
                             Text(text = "\nクラッシュログはありません。\n")
 
+                            Text(
+                                text = if (debugState.value) "デバッグ表示: ON（詳細）" else "デバッグ表示: OFF（最終1行）",
+                                modifier = Modifier.padding(top = 8.dp)
+                            )
+                            Switch(
+                                checked = debugState.value,
+                                onCheckedChange = { checked ->
+                                    debugState.value = checked
+                                    prefs.edit().putBoolean(KEY_OVERLAY_DEBUG, checked).apply()
+                                },
+                                modifier = Modifier.padding(top = 4.dp)
+                            )
+
                             Button(
                                 onClick = { startOverlayServiceSafely() },
-                                modifier = Modifier.padding(top = 8.dp)
+                                modifier = Modifier.padding(top = 12.dp)
                             ) {
                                 Text("オーバーレイ開始")
                             }
