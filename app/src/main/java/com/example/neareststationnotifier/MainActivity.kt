@@ -6,6 +6,8 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -34,8 +36,8 @@ class MainActivity : ComponentActivity() {
         private const val KEY_OVERLAY_DEBUG = "pref_overlay_debug"
     }
 
-    // 「開始ボタンが押された」状態を保持して、権限許可後に自動で再開する
     private var pendingStartOverlay = false
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     private val requestLocationPerms =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
@@ -60,9 +62,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        // オーバーレイ権限画面から戻ってきた時に自動で再開
+
+        // 設定画面から戻った直後は権限反映が遅れる端末があるので少し待って再チェック
         if (pendingStartOverlay) {
-            startOverlayServiceSafely()
+            mainHandler.removeCallbacksAndMessages(null)
+            mainHandler.postDelayed({
+                if (pendingStartOverlay) startOverlayServiceSafely()
+            }, 300L)
         }
     }
 
@@ -156,7 +162,7 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        // 1) Android 13+ 通知権限（無ければリクエスト）
+        // 1) 通知権限（Android 13+）
         if (Build.VERSION.SDK_INT >= 33) {
             val granted = ContextCompat.checkSelfPermission(
                 this,
@@ -168,7 +174,7 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // 2) 位置情報権限（無ければリクエスト）
+        // 2) 位置情報権限
         if (!hasLocationPermission()) {
             requestLocationPerms.launch(
                 arrayOf(
@@ -179,7 +185,7 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        // 3) ここまで揃って初めてサービス起動
+        // 3) 起動
         pendingStartOverlay = false
         val intent = Intent(this, OverlayService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
