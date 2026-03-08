@@ -34,6 +34,8 @@ class MainActivity : ComponentActivity() {
     companion object {
         private const val PREFS_NAME = "prefs"
         private const val KEY_OVERLAY_DEBUG = "pref_overlay_debug"
+
+        private const val KEY_FIRST_SETUP_DONE = "first_setup_done"
     }
 
     private var pendingStartOverlay = false
@@ -77,11 +79,26 @@ class MainActivity : ComponentActivity() {
 
         CrashLogger.install(applicationContext)
 
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+
+        // ★初回起動時に、先に許可フローだけ回しておく（体験改善）
+        if (!prefs.getBoolean(KEY_FIRST_SETUP_DONE, false)) {
+            // ここで「開始要求中」にしておくと、許可が揃ったタイミングで自動で次へ進む
+            pendingStartOverlay = true
+
+            // すぐ呼ぶとCompose初期化と競合することがあるので少し遅らせる
+            mainHandler.postDelayed({
+                startOverlayServiceSafely()
+                // 許可が揃って起動できたら pendingStartOverlay は false になる
+                // ここでは「初回セットアップを開始した」ことだけ記録
+                prefs.edit().putBoolean(KEY_FIRST_SETUP_DONE, true).apply()
+            }, 200L)
+        }
+
         setContent {
             val crashTextState = remember { mutableStateOf(CrashLogger.read(this)) }
             val scrollState = rememberScrollState()
 
-            val prefs = remember { getSharedPreferences(PREFS_NAME, MODE_PRIVATE) }
             val debugState = remember { mutableStateOf(prefs.getBoolean(KEY_OVERLAY_DEBUG, true)) }
 
             NearestStationNotifierTheme {
