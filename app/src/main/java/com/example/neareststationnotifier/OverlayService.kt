@@ -116,14 +116,12 @@ class OverlayService : Service() {
             return
         }
 
-        // 1) Overlay権限が無いなら設定へ（サービスは終了）
         if (!canDrawOverlays()) {
             openOverlayPermissionSettings()
             stopSelf()
             return
         }
 
-        // 2) 位置情報権限が無いなら、location FGSを開始できないので終了
         if (!hasLocationPermission()) {
             stopSelf()
             return
@@ -132,7 +130,8 @@ class OverlayService : Service() {
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         val inflater = LayoutInflater.from(this)
 
-        // ---- 玉 ----
+        updateScreenSizeCache()
+
         dotView = inflater.inflate(R.layout.overlay_dot, null)
         txtDot = dotView?.findViewById(R.id.txtDot)
 
@@ -144,8 +143,22 @@ class OverlayService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = dp(24)
-            y = dp(400)
+
+            val fallback = dp(44)
+            val w = dotView?.width?.takeIf { it > 0 } ?: fallback
+            val h = dotView?.height?.takeIf { it > 0 } ?: fallback
+
+            val ratio = overlayPrefs.loadDotRatio()
+            if (ratio != null) {
+                val (xr, yr) = ratio
+                val maxX = max(lastScreenW - w, 0)
+                val maxY = max(lastScreenH - h, 0)
+                x = (xr * maxX).toInt()
+                y = (yr * maxY).toInt()
+            } else {
+                x = dp(24)
+                y = dp(400)
+            }
         }
 
         try {
@@ -155,13 +168,8 @@ class OverlayService : Service() {
             return
         }
 
-        dotView?.post {
-            updateScreenSizeCache()
-            restoreDotPositionFromRatioOrDefault()
-            clampDotInsideScreen()
-        }
+        dotView?.post { clampDotInsideScreen() }
 
-        // ---- パネル ----
         panelText = TextView(this).apply {
             text = "loading..."
             setTextColor(0xFFFFFFFF.toInt())
@@ -211,8 +219,12 @@ class OverlayService : Service() {
 
         txtDot?.setOnTouchListener(TapDragToggleTouchListener())
 
-        // 位置情報更新開始
         fused.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
     }
 
     private fun startAsLocationFgs() {
@@ -263,12 +275,10 @@ class OverlayService : Service() {
     private fun animatePanelIn() {
         val v = panelText ?: return
         v.text = lastDisplayText
-
         if (v.visibility == View.VISIBLE && v.alpha >= 1f) return
 
         v.visibility = View.VISIBLE
         v.animate().cancel()
-
         v.translationX = -dp(360).toFloat()
         v.alpha = 0f
 
@@ -437,7 +447,18 @@ class OverlayService : Service() {
         (v * resources.displayMetrics.density).toInt()
 
     override fun onDestroy() {
+        // ★FGSを確実に降ろして通知も消す（タスクキル後に残りにくくする）
+        try {
+            if (Build.VERSION.SDK_INT >= 24) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+        } catch (_: Exception) {}
+
         super.onDestroy()
+
         fused.removeLocationUpdates(locationCallback)
 
         try { saveDotPositionAsRatio() } catch (_: Exception) {}
