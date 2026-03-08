@@ -34,7 +34,6 @@ class MainActivity : ComponentActivity() {
     companion object {
         private const val PREFS_NAME = "prefs"
         private const val KEY_OVERLAY_DEBUG = "pref_overlay_debug"
-
         private const val KEY_FIRST_SETUP_DONE = "first_setup_done"
     }
 
@@ -42,24 +41,15 @@ class MainActivity : ComponentActivity() {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private val requestLocationPerms =
-        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
-            val granted = (result[Manifest.permission.ACCESS_FINE_LOCATION] == true) ||
-                (result[Manifest.permission.ACCESS_COARSE_LOCATION] == true)
-
-            if (pendingStartOverlay && granted) {
-                startOverlayServiceSafely()
-            } else {
-                pendingStartOverlay = false
-            }
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { _ ->
+            // 初回セットアップ中は「許可を取るだけ」なので何もしない
+            // pendingStartOverlay中（ボタン押下中）なら再開
+            if (pendingStartOverlay) startOverlayServiceSafely()
         }
 
     private val requestPostNotifications =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (pendingStartOverlay && granted) {
-                startOverlayServiceSafely()
-            } else {
-                pendingStartOverlay = false
-            }
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { _ ->
+            if (pendingStartOverlay) startOverlayServiceSafely()
         }
 
     override fun onResume() {
@@ -81,16 +71,10 @@ class MainActivity : ComponentActivity() {
 
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
 
-        // ★初回起動時に、先に許可フローだけ回しておく（体験改善）
+        // ★初回起動時：許可だけ整える（サービスは起動しない）
         if (!prefs.getBoolean(KEY_FIRST_SETUP_DONE, false)) {
-            // ここで「開始要求中」にしておくと、許可が揃ったタイミングで自動で次へ進む
-            pendingStartOverlay = true
-
-            // すぐ呼ぶとCompose初期化と競合することがあるので少し遅らせる
             mainHandler.postDelayed({
-                startOverlayServiceSafely()
-                // 許可が揃って起動できたら pendingStartOverlay は false になる
-                // ここでは「初回セットアップを開始した」ことだけ記録
+                ensurePermissionsOnly()
                 prefs.edit().putBoolean(KEY_FIRST_SETUP_DONE, true).apply()
             }, 200L)
         }
@@ -172,14 +156,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun startOverlayServiceSafely() {
-        // 0) Overlay権限（無ければ設定へ）
+    /**
+     * 初回起動用：許可が無ければ案内するだけ（サービスは起動しない）
+     */
+    private fun ensurePermissionsOnly() {
+        // Overlay権限
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
             openOverlayPermissionScreen()
             return
         }
 
-        // 1) 通知権限（Android 13+）
+        // 通知権限（Android 13+）
         if (Build.VERSION.SDK_INT >= 33) {
             val granted = ContextCompat.checkSelfPermission(
                 this,
@@ -191,7 +178,7 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // 2) 位置情報権限
+        // 位置情報権限
         if (!hasLocationPermission()) {
             requestLocationPerms.launch(
                 arrayOf(
@@ -202,7 +189,39 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        // 3) 起動
+        // ここまで来たら「許可は揃ってる」だけ。サービスは起動しない。
+    }
+
+    /**
+     * ボタン押下用：毎回チェックして、揃っていればサービス起動
+     */
+    private fun startOverlayServiceSafely() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
+            openOverlayPermissionScreen()
+            return
+        }
+
+        if (Build.VERSION.SDK_INT >= 33) {
+            val granted = ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted) {
+                requestPostNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+                return
+            }
+        }
+
+        if (!hasLocationPermission()) {
+            requestLocationPerms.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
+            )
+            return
+        }
+
         pendingStartOverlay = false
         val intent = Intent(this, OverlayService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
