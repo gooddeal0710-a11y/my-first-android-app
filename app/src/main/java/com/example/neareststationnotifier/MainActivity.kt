@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
@@ -37,30 +38,54 @@ class MainActivity : ComponentActivity() {
         private const val KEY_FIRST_SETUP_DONE = "first_setup_done"
     }
 
-    private var pendingStartOverlay = false
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    // 「開始ボタン」由来の自動再開だけ許可する
+    private var pendingStartOverlay = false
+
+    // 権限リクエストの連打防止（StackOverflow対策）
+    private var permissionRequestInFlight = false
+
+    // 初回セットアップ中かどうか（起動時に許可を整える用）
+    private var firstSetupInProgress = false
 
     private val requestLocationPerms =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { _ ->
-            // 初回セットアップ中は「許可を取るだけ」なので何もしない
-            // pendingStartOverlay中（ボタン押下中）なら再開
-            if (pendingStartOverlay) startOverlayServiceSafely()
+            permissionRequestInFlight = false
+            // 初回セットアップ中なら次のステップへ
+            if (firstSetupInProgress) {
+                mainHandler.postDelayed({ ensurePermissionsOnlyStep() }, 200L)
+            }
+            // ボタン押下中なら起動再試行
+            if (pendingStartOverlay) {
+                mainHandler.postDelayed({ startOverlayServiceSafely() }, 200L)
+            }
         }
 
     private val requestPostNotifications =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { _ ->
-            if (pendingStartOverlay) startOverlayServiceSafely()
+            permissionRequestInFlight = false
+            if (firstSetupInProgress) {
+                mainHandler.postDelayed({ ensurePermissionsOnlyStep() }, 200L)
+            }
+            if (pendingStartOverlay) {
+                mainHandler.postDelayed({ startOverlayServiceSafely() }, 200L)
+            }
         }
 
     override fun onResume() {
         super.onResume()
 
-        // 設定画面から戻った直後は権限反映が遅れる端末があるので少し待って再チェック
+        // 設定画面から戻った直後の反映遅延対策：ただし「開始ボタン押下中」だけ
         if (pendingStartOverlay) {
-            mainHandler.removeCallbacksAndMessages(null)
             mainHandler.postDelayed({
                 if (pendingStartOverlay) startOverlayServiceSafely()
             }, 300L)
+        }
+
+        // 初回セットアップ中なら、戻ってきたタイミングで次のステップへ
+        if (firstSetupInProgress) {
+            mainHandler.postDelayed({ ensurePermissionsOnlyStep() }, 300L)
         }
     }
 
@@ -71,10 +96,11 @@ class MainActivity : ComponentActivity() {
 
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
 
-        // ★初回起動時：許可だけ整える（サービスは起動しない）
+        // 初回起動：許可だけ整える（サービスは起動しない）
         if (!prefs.getBoolean(KEY_FIRST_SETUP_DONE, false)) {
+            firstSetupInProgress = true
             mainHandler.postDelayed({
-                ensurePermissionsOnly()
+                ensurePermissionsOnlyStep()
                 prefs.edit().putBoolean(KEY_FIRST_SETUP_DONE, true).apply()
             }, 200L)
         }
@@ -103,7 +129,9 @@ class MainActivity : ComponentActivity() {
                                 text = "\n直近のクラッシュログ（crash.txt）:\n",
                                 style = MaterialTheme.typography.titleMedium
                             )
-                            Text(text = crashTextState.value!!)
+                            SelectionContainer {
+                                Text(text = crashTextState.value!!)
+                            }
 
                             Button(
                                 onClick = {
@@ -157,9 +185,12 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * 初回起動用：許可が無ければ案内するだけ（サービスは起動しない）
+     * 初回起動用：1ステップずつ許可を整える（サービスは起動しない）
+     * 連打防止のため、inFlight中は何もしない
      */
-    private fun ensurePermissionsOnly() {
+    private fun ensurePermissionsOnlyStep() {
+        if (permissionRequestInFlight) return
+
         // Overlay権限
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
             openOverlayPermissionScreen()
@@ -173,6 +204,7 @@ class MainActivity : ComponentActivity() {
                 Manifest.permission.POST_NOTIFICATIONS
             ) == PackageManager.PERMISSION_GRANTED
             if (!granted) {
+                permissionRequestInFlight = true
                 requestPostNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
                 return
             }
@@ -180,6 +212,7 @@ class MainActivity : ComponentActivity() {
 
         // 位置情報権限
         if (!hasLocationPermission()) {
+            permissionRequestInFlight = true
             requestLocationPerms.launch(
                 arrayOf(
                     Manifest.permission.ACCESS_FINE_LOCATION,
@@ -189,13 +222,16 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        // ここまで来たら「許可は揃ってる」だけ。サービスは起動しない。
+        // 全部揃ったら初回セットアップ終了
+        firstSetupInProgress = false
     }
 
     /**
      * ボタン押下用：毎回チェックして、揃っていればサービス起動
      */
     private fun startOverlayServiceSafely() {
+        if (permissionRequestInFlight) return
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
             openOverlayPermissionScreen()
             return
@@ -207,12 +243,14 @@ class MainActivity : ComponentActivity() {
                 Manifest.permission.POST_NOTIFICATIONS
             ) == PackageManager.PERMISSION_GRANTED
             if (!granted) {
+                permissionRequestInFlight = true
                 requestPostNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
                 return
             }
         }
 
         if (!hasLocationPermission()) {
+            permissionRequestInFlight = true
             requestLocationPerms.launch(
                 arrayOf(
                     Manifest.permission.ACCESS_FINE_LOCATION,
@@ -223,6 +261,7 @@ class MainActivity : ComponentActivity() {
         }
 
         pendingStartOverlay = false
+
         val intent = Intent(this, OverlayService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(intent)
