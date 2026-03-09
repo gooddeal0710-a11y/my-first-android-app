@@ -21,6 +21,7 @@ class StationApi(
             val out = ArrayList<StationCandidate>(arr.length())
             for (i in 0 until arr.length()) {
                 val st = arr.optJSONObject(i) ?: continue
+
                 out.add(
                     StationCandidate(
                         name = st.optString("name", "--"),
@@ -28,7 +29,9 @@ class StationApi(
                         company = st.optString("company", ""),
                         distanceRaw = pickDistanceRaw(st),
                         next = st.optString("next", ""),
-                        prev = st.optString("prev", "")
+                        prev = st.optString("prev", ""),
+                        lat = st.optString("y", "").toDoubleOrNull(),
+                        lon = st.optString("x", "").toDoubleOrNull()
                     )
                 )
             }
