@@ -78,6 +78,11 @@ class OverlayService : Service() {
     private var lastScreenW = 0
     private var lastScreenH = 0
 
+    // ★追加：次駅推測用
+    private val predictor = NextStationPredictor()
+    private var predictorState = NextStationPredictor.State()
+    private var prevFix: Pair<Double, Double>? = null
+
     private val locationCallback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
             val loc = result.lastLocation
@@ -241,7 +246,21 @@ class OverlayService : Service() {
             try {
                 lastApiStatus = "api:fetching"
                 val list = stationApi.getNearestStations(lat, lon)
-                lastStationsText = StationFormatter.formatTop3WithNextPrev(list)
+
+                // ★追加：次駅推測（表示用）
+                val cur = Pair(lat, lon)
+                val r = predictor.predict(
+                    prevLatLon = prevFix,
+                    curLatLon = cur,
+                    candidates = list.take(5),
+                    state = predictorState
+                )
+                predictorState = r.state
+                prevFix = cur
+
+                val predictedLine = r.predictedName?.let { "推測: $it" } ?: "推測: --"
+                lastStationsText = predictedLine + "\n" + StationFormatter.formatTop3WithNextPrev(list)
+
                 lastApiStatus = "api:ok"
 
                 if (isPanelShowing()) {
