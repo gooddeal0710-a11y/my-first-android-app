@@ -6,5 +6,7 @@ data class StationCandidate(
     val company: String,
     val distanceRaw: String,
     val next: String,
-    val prev: String
+    val prev: String,
+    val lat: Double?,   // APIの y
+    val lon: Double?    // APIの x
 )
