@@ -5,95 +5,114 @@ import kotlin.math.*
 class NextStationPredictor {
 
     data class State(
-        val confirmedName: String? = null,
-        val lastWinnerName: String? = null,
-        val lastWinnerStreak: Int = 0
+        val confirmedCurrentName: String? = null,
+        val lastCurrentWinnerName: String? = null,
+        val lastCurrentWinnerStreak: Int = 0
     )
 
     data class Result(
-        val predictedName: String?,
+        val currentName: String?,
+        val nextName: String?,
         val state: State
     )
 
     /**
-     * 本番向けの最小構成：
-     * - 距離 + 進行方向（取れるときだけ）で候補駅をスコアリング
-     * - 駅名の切り替わりを抑えるため、同じ勝者が連続2回で「確定」
+     * 仕様（最小）:
+     * - 現在駅: 距離が最小の候補を「勝者」とし、200m以内で同一勝者が連続2回なら確定
+     * - 次駅: 現在駅を除外し、進行方向（取れるときだけ）+距離でスコア最大の候補
      */
     fun predict(
         prevLatLon: Pair<Double, Double>?,
         curLatLon: Pair<Double, Double>,
         candidates: List<StationCandidate>,
-        state: State
+        state: State,
+        currentConfirmMeters: Double = 200.0
     ): Result {
-        if (candidates.isEmpty()) return Result(null, state)
+        if (candidates.isEmpty()) return Result(null, null, state)
 
         val (curLat, curLon) = curLatLon
         val moveBearing = prevLatLon?.let { bearingDeg(it.first, it.second, curLat, curLon) }
 
-        // 座標が取れてる候補を優先（取れてない場合は全候補で距離Raw頼み）
         val usable = candidates.filter { it.lat != null && it.lon != null }
         val list = if (usable.isNotEmpty()) usable else candidates
 
-        val winner = list.maxByOrNull { s ->
-            scoreStation(
+        // 現在駅（距離最小）
+        val currentWinner = list.minByOrNull { st ->
+            distanceMeters(curLat, curLon, st)
+        }
+        val currentWinnerName = currentWinner?.name
+        val currentWinnerDist = currentWinner?.let { distanceMeters(curLat, curLon, it) } ?: Double.POSITIVE_INFINITY
+
+        // ヒステリシス：200m以内で同じ勝者が連続2回なら確定
+        val newStreak =
+            if (currentWinnerName != null && currentWinnerName == state.lastCurrentWinnerName) state.lastCurrentWinnerStreak + 1
+            else 1
+
+        val newConfirmedCurrent =
+            if (currentWinnerName != null && currentWinnerDist <= currentConfirmMeters && newStreak >= 2) {
+                currentWinnerName
+            } else {
+                state.confirmedCurrentName
+            }
+
+        val newState = State(
+            confirmedCurrentName = newConfirmedCurrent,
+            lastCurrentWinnerName = currentWinnerName,
+            lastCurrentWinnerStreak = newStreak
+        )
+
+        val currentName = newConfirmedCurrent ?: currentWinnerName
+
+        // 次駅（現在駅を除外して前方スコア最大）
+        val nextCandidateList = list.filter { it.name != currentName }
+        val nextWinner = nextCandidateList.maxByOrNull { st ->
+            scoreNextStation(
                 moveBearing = moveBearing,
                 curLat = curLat,
                 curLon = curLon,
-                st = s
+                st = st
             )
         }
 
-        val winnerName = winner?.name
-
-        // ヒステリシス：同じ勝者が連続2回で確定
-        val newStreak =
-            if (winnerName != null && winnerName == state.lastWinnerName) state.lastWinnerStreak + 1
-            else 1
-
-        val newConfirmed =
-            if (winnerName != null && newStreak >= 2) winnerName else state.confirmedName
-
-        val newState = State(
-            confirmedName = newConfirmed,
-            lastWinnerName = winnerName,
-            lastWinnerStreak = newStreak
+        return Result(
+            currentName = currentName,
+            nextName = nextWinner?.name,
+            state = newState
         )
-
-        val predicted = newConfirmed ?: winnerName
-        return Result(predicted, newState)
     }
 
-    private fun scoreStation(
+    private fun scoreNextStation(
         moveBearing: Double?,
         curLat: Double,
         curLon: Double,
         st: StationCandidate
     ): Double {
-        val distM = if (st.lat != null && st.lon != null) {
-            haversineMeters(curLat, curLon, st.lat, st.lon)
-        } else {
-            parseDistanceMeters(st.distanceRaw)
-        }
+        val distM = distanceMeters(curLat, curLon, st)
 
-        // 近いほど高得点（200mスケール）
-        val distScore = 1.0 / (1.0 + distM / 200.0)
+        // 近いほど高得点（400mスケール：次駅は少し遠めも許容）
+        val distScore = 1.0 / (1.0 + distM / 400.0)
 
         // 進行方向が取れるときだけ「前方」を加点
         val dirScore = if (moveBearing != null && st.lat != null && st.lon != null) {
             val toStation = bearingDeg(curLat, curLon, st.lat, st.lon)
             val diff = angleDiffDeg(moveBearing, toStation) // 0..180
-            max(0.0, 1.0 - (diff / 120.0))
+            max(0.0, 1.0 - (diff / 90.0))
         } else 0.0
 
-        // 距離重視 + 方向で少し補正
-        return distScore * 1.0 + dirScore * 0.35
+        return distScore * 1.0 + dirScore * 0.6
+    }
+
+    private fun distanceMeters(curLat: Double, curLon: Double, st: StationCandidate): Double {
+        return if (st.lat != null && st.lon != null) {
+            haversineMeters(curLat, curLon, st.lat, st.lon)
+        } else {
+            parseDistanceMeters(st.distanceRaw)
+        }
     }
 
     private fun parseDistanceMeters(raw: String): Double {
         val v = raw.trim()
         val d = v.toDoubleOrNull() ?: return 0.0
-        // HeartRailsのdistanceはkm文字列のことが多い想定
         return if (d < 10.0) d * 1000.0 else d
     }
 
