@@ -258,8 +258,9 @@ class OverlayService : Service() {
                 predictorState = r.state
                 prevFix = cur
 
-                val predictedLine = r.predictedName?.let { "推測: $it" } ?: "推測: --"
-                lastStationsText = predictedLine + "\n" + StationFormatter.formatTop3WithNextPrev(list)
+                val currentLine = r.currentName?.let { "現在: $it" } ?: "現在: --"
+                val nextLine = r.nextName?.let { "次: $it" } ?: "次: --"
+                lastStationsText = currentLine + "\n" + nextLine + "\n" + StationFormatter.formatTop3WithNextPrev(list)
 
                 lastApiStatus = "api:ok"
 
