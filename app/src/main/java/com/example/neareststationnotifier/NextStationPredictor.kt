@@ -20,6 +20,9 @@ class NextStationPredictor {
      * 仕様（最小）:
      * - 現在駅: 距離が最小の候補を「勝者」とし、200m以内で同一勝者が連続2回なら確定
      * - 次駅: 現在駅を除外し、進行方向（取れるときだけ）+距離でスコア最大の候補
+     *
+     * 追加仕様:
+     * - 同名駅（"新宿駅" と "新宿"、"新宿（JR）" 等）を同一扱いし、代表は距離最小の1件に統合してから推定する
      */
     fun predict(
         prevLatLon: Pair<Double, Double>?,
@@ -33,8 +36,16 @@ class NextStationPredictor {
         val (curLat, curLon) = curLatLon
         val moveBearing = prevLatLon?.let { bearingDeg(it.first, it.second, curLat, curLon) }
 
+        // lat/lon が使える候補を優先
         val usable = candidates.filter { it.lat != null && it.lon != null }
-        val list = if (usable.isNotEmpty()) usable else candidates
+        val baseList = if (usable.isNotEmpty()) usable else candidates
+
+        // ★同名駅を統合（代表は距離最小）
+        val list = dedupeByStationNameKeepNearest(
+            curLat = curLat,
+            curLon = curLon,
+            list = baseList
+        )
 
         // 現在駅（距離最小）
         val currentWinner = list.minByOrNull { st ->
@@ -81,6 +92,57 @@ class NextStationPredictor {
         )
     }
 
+    /**
+     * 駅名キーで同一扱いし、各グループから「現在地からの距離が最小」の候補を代表として残す。
+     * LinkedHashMap を使うことで、初出順の安定性も保つ（ただし代表は距離で入れ替わり得る）。
+     */
+    private fun dedupeByStationNameKeepNearest(
+        curLat: Double,
+        curLon: Double,
+        list: List<StationCandidate>
+    ): List<StationCandidate> {
+        val bestByKey = LinkedHashMap<String, StationCandidate>()
+        for (st in list) {
+            val key = stationKeyFromName(st.name)
+            val prev = bestByKey[key]
+            if (prev == null) {
+                bestByKey[key] = st
+            } else {
+                val dPrev = distanceMeters(curLat, curLon, prev)
+                val dNew = distanceMeters(curLat, curLon, st)
+                if (dNew < dPrev) bestByKey[key] = st
+            }
+        }
+        return bestByKey.values.toList()
+    }
+
+    /**
+     * StationFormatter と同等の駅名正規化。
+     * - 不可視文字除去
+     * - 空白正規化
+     * - 括弧以降を落とす
+     * - 末尾の「駅」を落とす
+     */
+    private fun stationKeyFromName(raw: String): String {
+        var s = raw
+
+        // 不可視文字（ゼロ幅スペース等）を除去
+        s = s.replace(Regex("[\\u200B-\\u200D\\uFEFF]"), "")
+
+        // 空白正規化
+        s = s.trim()
+            .replace("　", " ")
+            .replace(Regex("\\s+"), " ")
+
+        // 括弧以降を落とす（駅名に余計な情報が混ざってる場合対策）
+        s = s.replace(Regex("[（(].*$"), "")
+
+        // 末尾の「駅」を落とす（"新宿駅" と "新宿" を同一扱い）
+        s = s.trim().removeSuffix("駅")
+
+        return s
+    }
+
     private fun scoreNextStation(
         moveBearing: Double?,
         curLat: Double,
@@ -110,6 +172,11 @@ class NextStationPredictor {
         }
     }
 
+    /**
+     * distanceRaw が数値だけで来る想定の簡易パース。
+     * - 10未満なら km とみなして m に変換（例: "0.3" -> 300m）
+     * - 10以上なら m とみなす（例: "250" -> 250m）
+     */
     private fun parseDistanceMeters(raw: String): Double {
         val v = raw.trim()
         val d = v.toDoubleOrNull() ?: return 0.0
