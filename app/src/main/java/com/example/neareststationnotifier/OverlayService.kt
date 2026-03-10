@@ -242,36 +242,40 @@ class OverlayService : Service() {
     }
 
     private fun fetchNearestStationsAsync(lat: Double, lon: Double) {
-        thread(start = true) {
-            try {
-                lastApiStatus = "api:fetching"
-                val list = stationApi.getNearestStations(lat, lon)
+    thread(start = true) {
+        try {
+            lastApiStatus = "api:fetching"
+            val list = stationApi.getNearestStations(lat, lon)
 
-                // ★追加：次駅推測（表示用）
-                val cur = Pair(lat, lon)
-                val r = predictor.predict(
-                    prevLatLon = prevFix,
-                    curLatLon = cur,
-                    candidates = list.take(5),
-                    state = predictorState
-                )
-                predictorState = r.state
-                prevFix = cur
+            // ★追加：次駅推測（表示用）
+            val cur = Pair(lat, lon)
+            val r = predictor.predict(
+                prevLatLon = prevFix,
+                curLatLon = cur,
+                candidates = list.take(5),
+                state = predictorState
+            )
+            predictorState = r.state
+            prevFix = cur
 
-                val currentLine = r.currentName?.let { "現在: $it" } ?: "現在: --"
-                val nextLine = r.nextName?.let { "次: $it" } ?: "次: --"
-                lastStationsText = currentLine + "\n" + nextLine + "\n" + StationFormatter.formatTop3WithNextPrev(list)
+            val currentLine = r.currentName?.let { "現在: $it" } ?: "現在: --"
+            val nextLine = r.nextName?.let { "次: $it" } ?: "次: --"
 
-                lastApiStatus = "api:ok"
+            lastStationsText =
+                currentLine + "\n" +
+                nextLine + "\n" +
+                StationFormatter.formatTop3WithNextPrev(list, cur)
 
-                if (isPanelShowing()) {
-                    mainHandler.post { panelText?.text = lastDisplayText }
-                }
-            } catch (_: Exception) {
-                lastApiStatus = "api:err"
+            lastApiStatus = "api:ok"
+
+            if (isPanelShowing()) {
+                mainHandler.post { panelText?.text = lastDisplayText }
             }
+        } catch (_: Exception) {
+            lastApiStatus = "api:err"
         }
     }
+}
 
     private fun canDrawOverlays(): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this)
