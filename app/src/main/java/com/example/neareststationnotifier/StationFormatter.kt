@@ -6,17 +6,20 @@ object StationFormatter {
 
     /**
      * 駅名で同一扱い（正規化キー）して上位3件だけ表示。
-     * 同名駅が複数ある場合は「距離が最小の1件」を代表として残す。
-     *
-     * 注意:
-     * - lat/lon がある場合はハバースインで距離計算
-     * - lat/lon が無い場合は distanceRaw を簡易パースして距離計算
+     * 同名駅が複数ある場合は「現在地からの距離が最小の1件」を代表として残す。
      */
-    fun formatTop3WithNextPrev(list: List<StationCandidate>): String {
+    fun formatTop3WithNextPrev(
+        list: List<StationCandidate>,
+        curLatLon: Pair<Double, Double>
+    ): String {
         if (list.isEmpty()) return "--"
 
-        // 表示側も「同名は距離最小の代表」に統一
-        val uniqueNearest = dedupeByStationNameKeepNearest(list).take(3)
+        val (curLat, curLon) = curLatLon
+        val uniqueNearest = dedupeByStationNameKeepNearest(
+            list = list,
+            curLat = curLat,
+            curLon = curLon
+        ).take(3)
 
         return buildString {
             uniqueNearest.forEachIndexed { idx, s ->
@@ -28,11 +31,11 @@ object StationFormatter {
         }.trimEnd()
     }
 
-    /**
-     * 駅名キーで同一扱いし、各グループから「距離が最小」の候補を代表として残す。
-     * LinkedHashMap を使って、初出順の安定性も保つ（代表は距離で入れ替わり得る）。
-     */
-    private fun dedupeByStationNameKeepNearest(list: List<StationCandidate>): List<StationCandidate> {
+    private fun dedupeByStationNameKeepNearest(
+        list: List<StationCandidate>,
+        curLat: Double,
+        curLon: Double
+    ): List<StationCandidate> {
         val bestByKey = LinkedHashMap<String, StationCandidate>()
         for (s in list) {
             val key = stationKeyFromName(s.name)
@@ -40,8 +43,8 @@ object StationFormatter {
             if (prev == null) {
                 bestByKey[key] = s
             } else {
-                val dPrev = distanceMeters(prev)
-                val dNew = distanceMeters(s)
+                val dPrev = distanceMeters(curLat, curLon, prev)
+                val dNew = distanceMeters(curLat, curLon, s)
                 if (dNew < dPrev) bestByKey[key] = s
             }
         }
@@ -68,28 +71,28 @@ object StationFormatter {
         return s
     }
 
-    private fun distanceMeters(st: StationCandidate): Double {
+    private fun distanceMeters(curLat: Double, curLon: Double, st: StationCandidate): Double {
         return if (st.lat != null && st.lon != null) {
-            // 現在地が無いので、ここでは「候補同士の比較」用に distanceRaw より信頼できる値が無い。
-            // ただし list は通常「現在地からの近い順」で来る想定なので、
-            // lat/lon がある場合でも distanceRaw が空なら 0 扱いにならないように distanceRaw を優先せず、
-            // lat/lon がある場合は distanceRaw を使わずに「distanceRawが無い=不明」として扱うのは難しい。
-            // ここでは distanceRaw が使えるならそれを使い、無ければ 0 にしないために大きめを返す。
-            // → 実運用では API が distanceRaw を返す前提なので問題になりにくい。
-            parseDistanceMeters(st.distanceRaw).takeIf { it > 0.0 } ?: 1.0e15
+            haversineMeters(curLat, curLon, st.lat, st.lon)
         } else {
             parseDistanceMeters(st.distanceRaw)
         }
     }
 
-    /**
-     * distanceRaw が数値だけで来る想定の簡易パース。
-     * - 10未満なら km とみなして m に変換（例: "0.3" -> 300m）
-     * - 10以上なら m とみなす（例: "250" -> 250m）
-     */
     private fun parseDistanceMeters(raw: String): Double {
         val v = raw.trim()
-        val d = v.toDoubleOrNull() ?: return 0.0
+        val d = v.toDoubleOrNull() ?: return Double.POSITIVE_INFINITY
         return if (d < 10.0) d * 1000.0 else d
+    }
+
+    private fun haversineMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        val r = 6371000.0
+        val dLat = Math.toRadians(lat2 - lat1)
+        val dLon = Math.toRadians(lon2 - lon1)
+        val a = sin(dLat / 2).pow(2.0) +
+            cos(Math.toRadians(lat1)) * cos(Math.toRadians(lat2)) *
+            sin(dLon / 2).pow(2.0)
+        val c = 2 * atan2(sqrt(a), sqrt(1 - a))
+        return r * c
     }
 }
