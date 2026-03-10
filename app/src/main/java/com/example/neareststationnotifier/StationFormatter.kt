@@ -79,6 +79,11 @@ object StationFormatter {
         }
     }
 
+    /**
+     * distanceRaw が数値だけで来る想定の簡易パース。
+     * - 10未満なら km とみなして m に変換（例: "0.3" -> 300m）
+     * - 10以上なら m とみなす（例: "250" -> 250m）
+     */
     private fun parseDistanceMeters(raw: String): Double {
         val v = raw.trim()
         val d = v.toDoubleOrNull() ?: return Double.POSITIVE_INFINITY
