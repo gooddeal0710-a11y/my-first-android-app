@@ -5,9 +5,11 @@ import kotlin.math.*
 class NextStationPredictor {
 
     data class State(
-        val confirmedCurrentName: String? = null,
-        val lastCurrentWinnerName: String? = null,
-        val lastCurrentWinnerStreak: Int = 0
+        val currentName: String? = null,
+        val currentLine: String? = null,
+        val pendingSwitchName: String? = null,
+        val pendingSwitchLine: String? = null,
+        val pendingCount: Int = 0
     )
 
     data class Result(
@@ -16,196 +18,151 @@ class NextStationPredictor {
         val state: State
     )
 
-    /**
-     * 仕様（最小）:
-     * - 現在駅: 距離が最小の候補を「勝者」とし、200m以内で同一勝者が連続2回なら確定
-     * - 次駅: 現在駅を除外し、進行方向（取れるときだけ）+距離でスコア最大の候補
-     *
-     * 追加仕様:
-     * - 同名駅（"新宿駅" と "新宿"、"新宿（JR）" 等）を同一扱いし、代表は距離最小の1件に統合してから推定する
-     */
     fun predict(
         prevLatLon: Pair<Double, Double>?,
         curLatLon: Pair<Double, Double>,
         candidates: List<StationCandidate>,
-        state: State,
-        currentConfirmMeters: Double = 200.0
+        state: State
     ): Result {
-        if (candidates.isEmpty()) return Result(null, null, state)
+        if (candidates.isEmpty()) return Result(state.currentName, null, state)
 
-        val (curLat, curLon) = curLatLon
-        val moveBearing = prevLatLon?.let { bearingDeg(it.first, it.second, curLat, curLon) }
+        // 近い順に並んでる前提が崩れてもいいように、距離で最寄りを取り直す
+        val nearest = candidates.minByOrNull { distMetersOrInf(it) }!!
+        val nearestDist = distMetersOrInf(nearest)
 
-        // lat/lon が使える候補を優先
-        val usable = candidates.filter { it.lat != null && it.lon != null }
-        val baseList = if (usable.isNotEmpty()) usable else candidates
+        val currentDist = state.currentName?.let { curName ->
+            candidates.firstOrNull { it.name == curName }?.let { distMetersOrInf(it) }
+        } ?: Double.POSITIVE_INFINITY
 
-        // ★同名駅を統合（代表は距離最小）
-        val list = dedupeByStationNameKeepNearest(
-            curLat = curLat,
-            curLon = curLon,
-            list = baseList
-        )
+        var newState = state
 
-        // 現在駅（距離最小）
-        val currentWinner = list.minByOrNull { st ->
-            distanceMeters(curLat, curLon, st)
-        }
-        val currentWinnerName = currentWinner?.name
-        val currentWinnerDist = currentWinner?.let { distanceMeters(curLat, curLon, it) } ?: Double.POSITIVE_INFINITY
-
-        // ヒステリシス：200m以内で同じ勝者が連続2回なら確定
-        val newStreak =
-            if (currentWinnerName != null && currentWinnerName == state.lastCurrentWinnerName) state.lastCurrentWinnerStreak + 1
-            else 1
-
-        val newConfirmedCurrent =
-            if (currentWinnerName != null && currentWinnerDist <= currentConfirmMeters && newStreak >= 2) {
-                currentWinnerName
-            } else {
-                state.confirmedCurrentName
-            }
-
-        val newState = State(
-            confirmedCurrentName = newConfirmedCurrent,
-            lastCurrentWinnerName = currentWinnerName,
-            lastCurrentWinnerStreak = newStreak
-        )
-
-        val currentName = newConfirmedCurrent ?: currentWinnerName
-
-        // 次駅（現在駅を除外して前方スコア最大）
-        val nextCandidateList = list.filter { it.name != currentName }
-        val nextWinner = nextCandidateList.maxByOrNull { st ->
-            scoreNextStation(
-                moveBearing = moveBearing,
-                curLat = curLat,
-                curLon = curLon,
-                st = st
+        // 1) 200m以内なら即「現在」をnearestに
+        if (nearestDist <= 200.0) {
+            newState = State(
+                currentName = nearest.name,
+                currentLine = nearest.line,
+                pendingSwitchName = null,
+                pendingSwitchLine = null,
+                pendingCount = 0
             )
-        }
+        } else {
+            // 2) 200m以内じゃなくても、明確に近い駅が出たら切替（追従重視）
+            val margin = 80.0
+            val needSwitch = (nearest.name != state.currentName) && (nearestDist + margin < currentDist)
 
-        return Result(
-            currentName = currentName,
-            nextName = nextWinner?.name,
-            state = newState
-        )
-    }
+            if (needSwitch) {
+                val samePending = (state.pendingSwitchName == nearest.name)
+                val nextCount = if (samePending) state.pendingCount + 1 else 1
 
-    /**
-     * 駅名キーで同一扱いし、各グループから「現在地からの距離が最小」の候補を代表として残す。
-     * LinkedHashMap を使うことで、初出順の安定性も保つ（ただし代表は距離で入れ替わり得る）。
-     */
-    private fun dedupeByStationNameKeepNearest(
-        curLat: Double,
-        curLon: Double,
-        list: List<StationCandidate>
-    ): List<StationCandidate> {
-        val bestByKey = LinkedHashMap<String, StationCandidate>()
-        for (st in list) {
-            val key = stationKeyFromName(st.name)
-            val prev = bestByKey[key]
-            if (prev == null) {
-                bestByKey[key] = st
+                if (nextCount >= 2) {
+                    newState = State(
+                        currentName = nearest.name,
+                        currentLine = nearest.line,
+                        pendingSwitchName = null,
+                        pendingSwitchLine = null,
+                        pendingCount = 0
+                    )
+                } else {
+                    newState = state.copy(
+                        pendingSwitchName = nearest.name,
+                        pendingSwitchLine = nearest.line,
+                        pendingCount = nextCount
+                    )
+                }
             } else {
-                val dPrev = distanceMeters(curLat, curLon, prev)
-                val dNew = distanceMeters(curLat, curLon, st)
-                if (dNew < dPrev) bestByKey[key] = st
+                // 条件を満たさないなら保留をリセット
+                newState = state.copy(
+                    pendingSwitchName = null,
+                    pendingSwitchLine = null,
+                    pendingCount = 0
+                )
             }
         }
-        return bestByKey.values.toList()
+
+        // 「次」推測：同一路線を優先して、nearestのnext/prevも使う
+        val nextName = pickNextName(
+            prevLatLon = prevLatLon,
+            curLatLon = curLatLon,
+            candidates = candidates,
+            currentLine = newState.currentLine
+        )
+
+        return Result(newState.currentName, nextName, newState)
     }
 
-    /**
-     * StationFormatter と同等の駅名正規化。
-     * - 不可視文字除去
-     * - 空白正規化
-     * - 括弧以降を落とす
-     * - 末尾の「駅」を落とす
-     */
-    private fun stationKeyFromName(raw: String): String {
-        var s = raw
+    private fun pickNextName(
+        prevLatLon: Pair<Double, Double>?,
+        curLatLon: Pair<Double, Double>,
+        candidates: List<StationCandidate>,
+        currentLine: String?
+    ): String? {
+        // まず同一路線だけに絞る（取れない/空なら全体）
+        val pool = if (!currentLine.isNullOrBlank()) {
+            candidates.filter { it.line == currentLine }.ifEmpty { candidates }
+        } else candidates
 
-        // 不可視文字（ゼロ幅スペース等）を除去
-        s = s.replace(Regex("[\\u200B-\\u200D\\uFEFF]"), "")
+        // prevが無いなら単純に最寄りの next を返す
+        val nearest = pool.minByOrNull { distMetersOrInf(it) } ?: return null
+        if (prevLatLon == null) return nearest.next.ifBlank { null }
 
-        // 空白正規化
-        s = s.trim()
-            .replace("　", " ")
-            .replace(Regex("\\s+"), " ")
+        // 移動方向に近い方（next/prev）を選ぶ：簡易版
+        val (pLat, pLon) = prevLatLon
+        val (cLat, cLon) = curLatLon
+        val vLat = cLat - pLat
+        val vLon = cLon - pLon
 
-        // 括弧以降を落とす（駅名に余計な情報が混ざってる場合対策）
-        s = s.replace(Regex("[（(].*$"), "")
+        // ほぼ停止なら next を優先
+        if (abs(vLat) + abs(vLon) < 1e-6) return nearest.next.ifBlank { null }
 
-        // 末尾の「駅」を落とす（"新宿駅" と "新宿" を同一扱い）
-        s = s.trim().removeSuffix("駅")
+        // next/prev の駅名が候補内にあれば、その方向ベクトルで判定
+        val nextCand = pool.firstOrNull { it.name == nearest.next }
+        val prevCand = pool.firstOrNull { it.name == nearest.prev }
 
-        return s
-    }
+        val scoreNext = nextCand?.let { directionScore(curLatLon, it, vLat, vLon) } ?: Double.NEGATIVE_INFINITY
+        val scorePrev = prevCand?.let { directionScore(curLatLon, it, vLat, vLon) } ?: Double.NEGATIVE_INFINITY
 
-    private fun scoreNextStation(
-        moveBearing: Double?,
-        curLat: Double,
-        curLon: Double,
-        st: StationCandidate
-    ): Double {
-        val distM = distanceMeters(curLat, curLon, st)
-
-        // 近いほど高得点（400mスケール：次駅は少し遠めも許容）
-        val distScore = 1.0 / (1.0 + distM / 400.0)
-
-        // 進行方向が取れるときだけ「前方」を加点
-        val dirScore = if (moveBearing != null && st.lat != null && st.lon != null) {
-            val toStation = bearingDeg(curLat, curLon, st.lat, st.lon)
-            val diff = angleDiffDeg(moveBearing, toStation) // 0..180
-            max(0.0, 1.0 - (diff / 90.0))
-        } else 0.0
-
-        return distScore * 1.0 + dirScore * 0.6
-    }
-
-    private fun distanceMeters(curLat: Double, curLon: Double, st: StationCandidate): Double {
-        return if (st.lat != null && st.lon != null) {
-            haversineMeters(curLat, curLon, st.lat, st.lon)
-        } else {
-            parseDistanceMeters(st.distanceRaw)
+        return when {
+            scoreNext >= scorePrev -> nearest.next.ifBlank { null }
+            else -> nearest.prev.ifBlank { null }
         }
     }
 
-    /**
-     * distanceRaw が数値だけで来る想定の簡易パース。
-     * - 10未満なら km とみなして m に変換（例: "0.3" -> 300m）
-     * - 10以上なら m とみなす（例: "250" -> 250m）
-     */
-    private fun parseDistanceMeters(raw: String): Double {
-        val v = raw.trim()
-        val d = v.toDoubleOrNull() ?: return 0.0
-        return if (d < 10.0) d * 1000.0 else d
+    private fun directionScore(
+        curLatLon: Pair<Double, Double>,
+        target: StationCandidate,
+        vLat: Double,
+        vLon: Double
+    ): Double {
+        val tLat = target.lat ?: return Double.NEGATIVE_INFINITY
+        val tLon = target.lon ?: return Double.NEGATIVE_INFINITY
+        val dLat = tLat - curLatLon.first
+        val dLon = tLon - curLatLon.second
+
+        val vNorm = sqrt(vLat * vLat + vLon * vLon)
+        val dNorm = sqrt(dLat * dLat + dLon * dLon)
+        if (vNorm == 0.0 || dNorm == 0.0) return Double.NEGATIVE_INFINITY
+
+        // cos類似度（-1..1）
+        return (vLat * dLat + vLon * dLon) / (vNorm * dNorm)
     }
 
-    private fun haversineMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
-        val r = 6371000.0
-        val dLat = Math.toRadians(lat2 - lat1)
-        val dLon = Math.toRadians(lon2 - lon1)
-        val a = sin(dLat / 2).pow(2.0) +
-            cos(Math.toRadians(lat1)) * cos(Math.toRadians(lat2)) *
-            sin(dLon / 2).pow(2.0)
-        val c = 2 * atan2(sqrt(a), sqrt(1 - a))
-        return r * c
-    }
+    private fun distMetersOrInf(c: StationCandidate): Double {
+        val raw = c.distanceRaw.trim()
+        if (raw.isEmpty()) return Double.POSITIVE_INFINITY
 
-    private fun bearingDeg(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
-        val phi1 = Math.toRadians(lat1)
-        val phi2 = Math.toRadians(lat2)
-        val dLon = Math.toRadians(lon2 - lon1)
-        val y = sin(dLon) * cos(phi2)
-        val x = cos(phi1) * sin(phi2) - sin(phi1) * cos(phi2) * cos(dLon)
-        val brng = Math.toDegrees(atan2(y, x))
-        return (brng + 360.0) % 360.0
-    }
+        // "0.123" は km とみなす（HeartRailsの実態に合わせる）
+        raw.toDoubleOrNull()?.let { return it * 1000.0 }
 
-    private fun angleDiffDeg(a: Double, b: Double): Double {
-        val d = abs(a - b) % 360.0
-        return if (d > 180.0) 360.0 - d else d
+        // "123m" / "0.123km" も一応吸収
+        Regex("""^\s*([0-9]+(\.[0-9]+)?)\s*m\s*$""", RegexOption.IGNORE_CASE)
+            .matchEntire(raw)?.let { return it.groupValues[1].toDoubleOrNull() ?: Double.POSITIVE_INFINITY }
+
+        Regex("""^\s*([0-9]+(\.[0-9]+)?)\s*km\s*$""", RegexOption.IGNORE_CASE)
+            .matchEntire(raw)?.let {
+                val v = it.groupValues[1].toDoubleOrNull() ?: return Double.POSITIVE_INFINITY
+                return v * 1000.0
+            }
+
+        return Double.POSITIVE_INFINITY
     }
 }
