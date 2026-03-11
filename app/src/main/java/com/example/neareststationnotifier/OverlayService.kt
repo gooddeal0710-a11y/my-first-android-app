@@ -52,10 +52,9 @@ class OverlayService : Service() {
     private val stationApi by lazy { StationApi() }
     private val stationsWorker by lazy { NearestStationsWorker(stationApi) }
 
-    private val overlayPrefs by lazy { OverlayPrefs(this) }
     private val ui by lazy {
         val wm = getSystemService(WINDOW_SERVICE) as android.view.WindowManager
-        OverlayUiController(this, wm, overlayPrefs)
+        OverlayUiController(this, wm)
     }
 
     private val locationCallback = object : LocationCallback() {
@@ -121,23 +120,14 @@ class OverlayService : Service() {
         super.onTaskRemoved(rootIntent)
     }
 
-    override fun onDestroy() {
-        try {
-            if (Build.VERSION.SDK_INT >= 24) {
-                stopForeground(STOP_FOREGROUND_REMOVE)
-            } else {
-                @Suppress("DEPRECATION")
-                stopForeground(true)
-            }
-        } catch (_: Exception) {}
-
-        super.onDestroy()
-
-        fused.removeLocationUpdates(locationCallback)
-        try { ui.detach() } catch (_: Exception) {}
+    private fun startAsLocationFgs() {
+        val n = createNotification()
+        if (Build.VERSION.SDK_INT >= 34) {
+            startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
+        } else {
+            startForeground(1, n)
+        }
     }
-
-    override fun onBind(intent: Intent?): IBinder? = null
 
     private fun fetchNearestStationsAsync(lat: Double, lon: Double) {
         thread(start = true) {
@@ -152,15 +142,6 @@ class OverlayService : Service() {
             } catch (_: Exception) {
                 lastApiStatus = "api:err"
             }
-        }
-    }
-
-    private fun startAsLocationFgs() {
-        val n = createNotification()
-        if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
-        } else {
-            startForeground(1, n)
         }
     }
 
@@ -181,6 +162,24 @@ class OverlayService : Service() {
         val coarse = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
         return fine == PackageManager.PERMISSION_GRANTED || coarse == PackageManager.PERMISSION_GRANTED
     }
+
+    override fun onDestroy() {
+        try {
+            if (Build.VERSION.SDK_INT >= 24) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+        } catch (_: Exception) {}
+
+        super.onDestroy()
+
+        fused.removeLocationUpdates(locationCallback)
+        try { ui.detach() } catch (_: Exception) {}
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
 
     private fun createNotification(): Notification {
         val channelId = "overlay_service"
