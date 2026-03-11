@@ -65,8 +65,14 @@ class OverlayUiController(
             }
         }
 
-        if (dotView?.parent == null) windowManager.addView(dotView, dotParams)
-        dotView?.post { clampDotInsideScreen() }
+        val dv = dotView ?: throw IllegalStateException("dotView is null after inflate")
+        if (dv.parent == null) windowManager.addView(dv, dotParams)
+
+        // post は遅延実行されるので、その時点で dotView が null になってても落ちないようにする
+        dv.post {
+            val v = dotView ?: return@post
+            clampDotInsideScreen(v)
+        }
 
         panelText = TextView(context).apply {
             text = "loading..."
@@ -93,15 +99,16 @@ class OverlayUiController(
             y = 0
         }
 
-        if (panelText?.parent == null) windowManager.addView(panelText, panelParams)
+        val pv = panelText ?: throw IllegalStateException("panelText is null")
+        if (pv.parent == null) windowManager.addView(pv, panelParams)
 
-        panelText?.apply {
+        pv.apply {
             alpha = 0f
             translationX = -dp(360).toFloat()
             visibility = View.GONE
         }
 
-        dotView?.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+        dv.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
             if (screenSizeChanged()) {
                 updateScreenSizeCache()
                 restoreDotPositionFromRatioOrDefault()
@@ -116,8 +123,17 @@ class OverlayUiController(
     fun detach() {
         try { saveDotPositionAsRatio() } catch (_: Exception) {}
 
-        try { if (dotView?.parent != null) windowManager.removeView(dotView) } catch (_: Exception) {}
-        try { if (panelText?.parent != null) windowManager.removeView(panelText) } catch (_: Exception) {}
+        try {
+            dotView?.let { v ->
+                if (v.parent != null) windowManager.removeView(v)
+            }
+        } catch (_: Exception) {}
+
+        try {
+            panelText?.let { v ->
+                if (v.parent != null) windowManager.removeView(v)
+            }
+        } catch (_: Exception) {}
 
         dotView = null
         panelText = null
@@ -211,14 +227,15 @@ class OverlayUiController(
                         dotParams.x = (downParamX + (newViewScreenX - downViewScreenX)).toInt()
                         dotParams.y = (downParamY + (newViewScreenY - downViewScreenY)).toInt()
 
-                        windowManager.updateViewLayout(dotView, dotParams)
+                        // v はタッチ対象なので non-null
+                        windowManager.updateViewLayout(v, dotParams)
                     }
                     return true
                 }
 
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     if (dragging) {
-                        clampDotInsideScreen()
+                        clampDotInsideScreen(v)
                         saveDotPositionAsRatio()
                         return true
                     }
@@ -242,13 +259,15 @@ class OverlayUiController(
     }
 
     private fun restoreDotPositionFromRatioOrDefault() {
+        val v = dotView ?: return
+
         val m = context.resources.displayMetrics
         val screenW = m.widthPixels
         val screenH = m.heightPixels
 
         val fallback = dp(44)
-        val w = dotView?.width?.takeIf { it > 0 } ?: fallback
-        val h = dotView?.height?.takeIf { it > 0 } ?: fallback
+        val w = v.width.takeIf { it > 0 } ?: fallback
+        val h = v.height.takeIf { it > 0 } ?: fallback
 
         val ratio = overlayPrefs.loadDotRatio()
         if (ratio != null) {
@@ -257,22 +276,24 @@ class OverlayUiController(
             val maxY = max(screenH - h, 0)
             dotParams.x = (xr * maxX).toInt()
             dotParams.y = (yr * maxY).toInt()
-            windowManager.updateViewLayout(dotView, dotParams)
+            windowManager.updateViewLayout(v, dotParams)
         } else {
             dotParams.x = dp(24)
             dotParams.y = dp(400)
-            windowManager.updateViewLayout(dotView, dotParams)
+            windowManager.updateViewLayout(v, dotParams)
         }
     }
 
     private fun saveDotPositionAsRatio() {
+        val v = dotView ?: return
+
         val m = context.resources.displayMetrics
         val screenW = m.widthPixels
         val screenH = m.heightPixels
 
         val fallback = dp(44)
-        val w = dotView?.width?.takeIf { it > 0 } ?: fallback
-        val h = dotView?.height?.takeIf { it > 0 } ?: fallback
+        val w = v.width.takeIf { it > 0 } ?: fallback
+        val h = v.height.takeIf { it > 0 } ?: fallback
 
         overlayPrefs.saveDotRatio(
             x = dotParams.x,
@@ -285,18 +306,23 @@ class OverlayUiController(
     }
 
     private fun clampDotInsideScreen() {
+        val v = dotView ?: return
+        clampDotInsideScreen(v)
+    }
+
+    private fun clampDotInsideScreen(v: View) {
         val metrics = context.resources.displayMetrics
         val screenW = metrics.widthPixels
         val screenH = metrics.heightPixels
 
         val fallback = dp(44)
-        val w = dotView?.width?.takeIf { it > 0 } ?: fallback
-        val h = dotView?.height?.takeIf { it > 0 } ?: fallback
+        val w = v.width.takeIf { it > 0 } ?: fallback
+        val h = v.height.takeIf { it > 0 } ?: fallback
 
         dotParams.x = min(max(dotParams.x, 0), max(screenW - w, 0))
         dotParams.y = min(max(dotParams.y, 0), max(screenH - h, 0))
 
-        windowManager.updateViewLayout(dotView, dotParams)
+        windowManager.updateViewLayout(v, dotParams)
     }
 
     private fun dp(v: Int): Int =
