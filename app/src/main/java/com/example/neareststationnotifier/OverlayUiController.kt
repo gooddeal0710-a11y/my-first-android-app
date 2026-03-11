@@ -23,7 +23,6 @@ class OverlayUiController(
     private val overlayPrefs = OverlayPrefs(context)
 
     private var dotView: View? = null
-    private var txtDot: TextView? = null
     private var panelText: TextView? = null
 
     private lateinit var dotParams: WindowManager.LayoutParams
@@ -37,7 +36,6 @@ class OverlayUiController(
         updateScreenSizeCache()
 
         dotView = inflater.inflate(R.layout.overlay_dot, null)
-        txtDot = dotView?.findViewById(R.id.txtDot)
 
         dotParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -68,7 +66,6 @@ class OverlayUiController(
         val dv = dotView ?: throw IllegalStateException("dotView is null after inflate")
         if (dv.parent == null) windowManager.addView(dv, dotParams)
 
-        // post は遅延実行されるので、その時点で dotView が null になってても落ちないようにする
         dv.post {
             val v = dotView ?: return@post
             clampDotInsideScreen(v)
@@ -117,7 +114,8 @@ class OverlayUiController(
             }
         }
 
-        txtDot?.setOnTouchListener(TapDragToggleTouchListener())
+        // ★重要：タッチは「WindowManagerにaddViewしたルート(dotView)」に付ける
+        dv.setOnTouchListener(TapDragToggleTouchListener())
     }
 
     fun detach() {
@@ -137,7 +135,6 @@ class OverlayUiController(
 
         dotView = null
         panelText = null
-        txtDot = null
     }
 
     fun isPanelShowing(): Boolean =
@@ -196,14 +193,18 @@ class OverlayUiController(
 
         private val tmpLoc = IntArray(2)
 
-        override fun onTouch(v: View, event: MotionEvent): Boolean {
+        override fun onTouch(touchedView: View, event: MotionEvent): Boolean {
+            val root = dotView ?: return false
+            // 念のため：WindowManagerに付いてないなら何もしない
+            if (root.parent == null) return false
+
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     dragging = false
                     downRawX = event.rawX
                     downRawY = event.rawY
 
-                    v.getLocationOnScreen(tmpLoc)
+                    root.getLocationOnScreen(tmpLoc)
                     downViewScreenX = tmpLoc[0]
                     downViewScreenY = tmpLoc[1]
 
@@ -227,15 +228,14 @@ class OverlayUiController(
                         dotParams.x = (downParamX + (newViewScreenX - downViewScreenX)).toInt()
                         dotParams.y = (downParamY + (newViewScreenY - downViewScreenY)).toInt()
 
-                        // v はタッチ対象なので non-null
-                        windowManager.updateViewLayout(v, dotParams)
+                        windowManager.updateViewLayout(root, dotParams)
                     }
                     return true
                 }
 
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     if (dragging) {
-                        clampDotInsideScreen(v)
+                        clampDotInsideScreen(root)
                         saveDotPositionAsRatio()
                         return true
                     }
@@ -276,11 +276,11 @@ class OverlayUiController(
             val maxY = max(screenH - h, 0)
             dotParams.x = (xr * maxX).toInt()
             dotParams.y = (yr * maxY).toInt()
-            windowManager.updateViewLayout(v, dotParams)
+            if (v.parent != null) windowManager.updateViewLayout(v, dotParams)
         } else {
             dotParams.x = dp(24)
             dotParams.y = dp(400)
-            windowManager.updateViewLayout(v, dotParams)
+            if (v.parent != null) windowManager.updateViewLayout(v, dotParams)
         }
     }
 
@@ -322,7 +322,7 @@ class OverlayUiController(
         dotParams.x = min(max(dotParams.x, 0), max(screenW - w, 0))
         dotParams.y = min(max(dotParams.y, 0), max(screenH - h, 0))
 
-        windowManager.updateViewLayout(v, dotParams)
+        if (v.parent != null) windowManager.updateViewLayout(v, dotParams)
     }
 
     private fun dp(v: Int): Int =
