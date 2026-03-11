@@ -19,13 +19,14 @@ import kotlin.math.min
 class OverlayUiController(
     private val context: Context,
     private val windowManager: WindowManager,
-    private val overlayPrefs: OverlayPrefs
 ) {
+    private val overlayPrefs = OverlayPrefs(context)
+
     private var dotView: View? = null
     private var txtDot: TextView? = null
-    private lateinit var dotParams: WindowManager.LayoutParams
-
     private var panelText: TextView? = null
+
+    private lateinit var dotParams: WindowManager.LayoutParams
     private lateinit var panelParams: WindowManager.LayoutParams
 
     private var lastScreenW = 0
@@ -130,7 +131,7 @@ class OverlayUiController(
         panelText?.text = text
     }
 
-    private fun togglePanel() {
+    fun togglePanel() {
         if (isPanelShowing()) animatePanelOut() else animatePanelIn()
     }
 
