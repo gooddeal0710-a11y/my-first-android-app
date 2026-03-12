@@ -7,10 +7,9 @@ class NearestStationsWorker(
     private var predictorState = NextStationPredictor.State()
     private var prevFix: Pair<Double, Double>? = null
 
-    /**
-     * 駅取得 + 次駅推測 + 表示文字列生成までをまとめて行う。
-     * 成功時は stationsText を返す。失敗時は例外を投げる（呼び出し側で握る）。
-     */
+    // ★アプリのボタンで切り替えるフラグ
+    var showDebugOverlay: Boolean = true
+
     fun fetchStationsText(lat: Double, lon: Double): String {
         val list = stationApi.getNearestStations(lat, lon)
 
@@ -27,9 +26,13 @@ class NearestStationsWorker(
         val currentLine = r.currentName?.let { "現在: $it" } ?: "現在: --"
         val nextLine = r.nextName?.let { "次: $it" } ?: "次: --"
 
-        return currentLine + "\n" +
-            nextLine + "\n" +
-            r.debugText + "\n" +
-            StationFormatter.formatTop3WithNextPrev(list, cur)
+        return buildString {
+            append(currentLine).append("\n")
+            append(nextLine).append("\n")
+            if (showDebugOverlay && r.debugText.isNotBlank()) {
+                append(r.debugText).append("\n")
+            }
+            append(StationFormatter.formatTop3WithNextPrev(list, cur))
+        }
     }
 }
