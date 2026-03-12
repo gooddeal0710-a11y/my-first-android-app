@@ -15,7 +15,8 @@ class NextStationPredictor {
     data class Result(
         val currentName: String?,
         val nextName: String?,
-        val state: State
+        val state: State,
+        val debugText: String = ""
     )
 
     fun predict(
@@ -24,7 +25,14 @@ class NextStationPredictor {
         candidates: List<StationCandidate>,
         state: State
     ): Result {
-        if (candidates.isEmpty()) return Result(state.currentName, null, state)
+        if (candidates.isEmpty()) {
+            return Result(
+                currentName = state.currentName,
+                nextName = null,
+                state = state,
+                debugText = "dbg: no candidates"
+            )
+        }
 
         // 近い順に並んでる前提が崩れてもいいように、距離で最寄りを取り直す
         val nearest = candidates.minByOrNull { distMetersOrInf(it) }!!
@@ -34,7 +42,18 @@ class NextStationPredictor {
             candidates.firstOrNull { it.name == curName }?.let { distMetersOrInf(it) }
         } ?: Double.POSITIVE_INFINITY
 
+        // ベクトル（prevが無いときは0）
+        val (vLat, vLon) = if (prevLatLon != null) {
+            (curLatLon.first - prevLatLon.first) to (curLatLon.second - prevLatLon.second)
+        } else {
+            0.0 to 0.0
+        }
+        val vNorm = sqrt(vLat * vLat + vLon * vLon)
+
         var newState = state
+        var decision = "keep"
+        var needSwitch = false
+        var pending = 0
 
         // 1) 200m以内なら即「現在」をnearestに
         if (nearestDist <= 200.0) {
@@ -45,14 +64,16 @@ class NextStationPredictor {
                 pendingSwitchLine = null,
                 pendingCount = 0
             )
+            decision = "set_current<=200m"
         } else {
             // 2) 200m以内じゃなくても、明確に近い駅が出たら切替（追従重視）
             val margin = 80.0
-            val needSwitch = (nearest.name != state.currentName) && (nearestDist + margin < currentDist)
+            needSwitch = (nearest.name != state.currentName) && (nearestDist + margin < currentDist)
 
             if (needSwitch) {
                 val samePending = (state.pendingSwitchName == nearest.name)
                 val nextCount = if (samePending) state.pendingCount + 1 else 1
+                pending = nextCount
 
                 if (nextCount >= 2) {
                     newState = State(
@@ -62,12 +83,14 @@ class NextStationPredictor {
                         pendingSwitchLine = null,
                         pendingCount = 0
                     )
+                    decision = "switch_by_margin"
                 } else {
                     newState = state.copy(
                         pendingSwitchName = nearest.name,
                         pendingSwitchLine = nearest.line,
                         pendingCount = nextCount
                     )
+                    decision = "pending_switch"
                 }
             } else {
                 // 条件を満たさないなら保留をリセット
@@ -76,6 +99,7 @@ class NextStationPredictor {
                     pendingSwitchLine = null,
                     pendingCount = 0
                 )
+                decision = "keep_reset_pending"
             }
         }
 
@@ -87,7 +111,26 @@ class NextStationPredictor {
             currentLine = newState.currentLine
         )
 
-        return Result(newState.currentName, nextName, newState)
+        val margin = 80.0
+        val dbg = buildString {
+            append("dbg line=").append(newState.currentLine ?: "--")
+            append(" v=(").append("%.6f".format(vLat)).append(",").append("%.6f".format(vLon)).append(")")
+            append(" |v|=").append("%.6f".format(vNorm))
+            append(" nearest=").append(nearest.name).append("@").append(nearest.line)
+            append(" nd=").append(nearestDist.roundToInt()).append("m")
+            append(" cd=").append(if (currentDist.isFinite()) currentDist.roundToInt().toString() else "inf").append("m")
+            append(" m=").append(margin.roundToInt()).append("m")
+            append(" need=").append(needSwitch)
+            append(" pend=").append(pending)
+            append(" dec=").append(decision)
+        }
+
+        return Result(
+            currentName = newState.currentName,
+            nextName = nextName,
+            state = newState,
+            debugText = dbg
+        )
     }
 
     private fun pickNextName(
@@ -99,7 +142,9 @@ class NextStationPredictor {
         // まず同一路線だけに絞る（取れない/空なら全体）
         val pool = if (!currentLine.isNullOrBlank()) {
             candidates.filter { it.line == currentLine }.ifEmpty { candidates }
-        } else candidates
+        } else {
+            candidates
+        }
 
         // prevが無いなら単純に最寄りの next を返す
         val nearest = pool.minByOrNull { distMetersOrInf(it) } ?: return null
@@ -121,9 +166,10 @@ class NextStationPredictor {
         val scoreNext = nextCand?.let { directionScore(curLatLon, it, vLat, vLon) } ?: Double.NEGATIVE_INFINITY
         val scorePrev = prevCand?.let { directionScore(curLatLon, it, vLat, vLon) } ?: Double.NEGATIVE_INFINITY
 
-        return when {
-            scoreNext >= scorePrev -> nearest.next.ifBlank { null }
-            else -> nearest.prev.ifBlank { null }
+        return if (scoreNext >= scorePrev) {
+            nearest.next.ifBlank { null }
+        } else {
+            nearest.prev.ifBlank { null }
         }
     }
 
@@ -155,10 +201,12 @@ class NextStationPredictor {
 
         // "123m" / "0.123km" も一応吸収
         Regex("""^\s*([0-9]+(\.[0-9]+)?)\s*m\s*$""", RegexOption.IGNORE_CASE)
-            .matchEntire(raw)?.let { return it.groupValues[1].toDoubleOrNull() ?: Double.POSITIVE_INFINITY }
+            .matchEntire(raw)
+            ?.let { return it.groupValues[1].toDoubleOrNull() ?: Double.POSITIVE_INFINITY }
 
         Regex("""^\s*([0-9]+(\.[0-9]+)?)\s*km\s*$""", RegexOption.IGNORE_CASE)
-            .matchEntire(raw)?.let {
+            .matchEntire(raw)
+            ?.let {
                 val v = it.groupValues[1].toDoubleOrNull() ?: return Double.POSITIVE_INFINITY
                 return v * 1000.0
             }
