@@ -1,7 +1,5 @@
 package com.example.neareststationnotifier
 
-import kotlin.concurrent.thread
-
 class NearestStationsWorker(
     private val stationApi: StationApi,
     private val predictor: NextStationPredictor = NextStationPredictor()
@@ -31,6 +29,7 @@ class NearestStationsWorker(
 
         return currentLine + "\n" +
             nextLine + "\n" +
+            r.debugText + "\n" +
             StationFormatter.formatTop3WithNextPrev(list, cur)
     }
 }
