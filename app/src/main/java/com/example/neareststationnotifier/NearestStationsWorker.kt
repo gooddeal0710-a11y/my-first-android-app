@@ -1,14 +1,14 @@
 package com.example.neareststationnotifier
 
+import android.content.Context
+
 class NearestStationsWorker(
+    private val context: Context,
     private val stationApi: StationApi,
     private val predictor: NextStationPredictor = NextStationPredictor()
 ) {
     private var predictorState = NextStationPredictor.State()
     private var prevFix: Pair<Double, Double>? = null
-
-    // ★アプリのボタンで切り替えるフラグ
-    var showDebugOverlay: Boolean = true
 
     fun fetchStationsText(lat: Double, lon: Double): String {
         val list = stationApi.getNearestStations(lat, lon)
@@ -25,6 +25,9 @@ class NearestStationsWorker(
 
         val currentLine = r.currentName?.let { "現在: $it" } ?: "現在: --"
         val nextLine = r.nextName?.let { "次: $it" } ?: "次: --"
+
+        // ★ここで毎回Prefsを読む（スイッチ変更が次回更新から反映される）
+        val showDebugOverlay = DebugPrefs.getShowDebug(context)
 
         return buildString {
             append(currentLine).append("\n")
