@@ -50,7 +50,14 @@ class OverlayService : Service() {
     @Volatile private var lastDisplayText: String = "loading..."
 
     private val stationApi by lazy { StationApi() }
-    private val stationsWorker by lazy { NearestStationsWorker(stationApi) }
+
+    // ★NearestStationsWorker が (context, stationApi, ...) になったので合わせる
+    private val stationsWorker by lazy {
+        NearestStationsWorker(
+            context = this,
+            stationApi = stationApi
+        )
+    }
 
     private val ui by lazy {
         val wm = getSystemService(WINDOW_SERVICE) as android.view.WindowManager
