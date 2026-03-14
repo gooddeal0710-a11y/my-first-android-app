@@ -51,7 +51,7 @@ class OverlayService : Service() {
 
     private val stationApi by lazy { StationApi() }
 
-    // ★NearestStationsWorker が (context, stationApi, ...) になったので合わせる
+    // ★NearestStationsWorker が (context, stationApi, ...) なので合わせる
     private val stationsWorker by lazy {
         NearestStationsWorker(
             context = this,
