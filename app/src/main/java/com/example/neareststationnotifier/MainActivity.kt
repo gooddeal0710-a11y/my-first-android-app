@@ -10,15 +10,8 @@ import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Switch
-import androidx.compose.material3.Text
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -26,20 +19,31 @@ import androidx.core.content.ContextCompat
 
 class MainActivity : ComponentActivity() {
 
+    // 起動直後の「連続誘導」を1回だけやるためのフラグ
+    private var didInitialPermissionFlow = false
+
     private val requestLocationPerms =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { _ ->
-            // 結果はここでは使わない（ボタン押下時に再チェックして起動する）
+            // 位置情報の結果が返ってきたら、続けてオーバーレイへ
+            if (hasLocationPermission() && !canDrawOverlays()) {
+                openOverlayPermissionSettings()
+            }
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // 初回起動で位置情報権限を出したいならここで要求
-        ensureLocationPermission()
-
         setContent {
             MaterialTheme {
                 var showDebug by remember { mutableStateOf(DebugPrefs.getShowDebug(this)) }
+
+                // 初回表示時に「位置情報→オーバーレイ」を連続で誘導
+                LaunchedEffect(Unit) {
+                    if (!didInitialPermissionFlow) {
+                        didInitialPermissionFlow = true
+                        startInitialPermissionFlow()
+                    }
+                }
 
                 Column(modifier = Modifier.padding(24.dp)) {
                     Text("NearestStationNotifier")
@@ -78,20 +82,40 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun startOverlayWithPermissions() {
-        // 1) 位置情報権限
+    private fun startInitialPermissionFlow() {
+        // 1) 位置情報が無ければまず要求（結果コールバックでオーバーレイへ続く）
         if (!hasLocationPermission()) {
-            ensureLocationPermission()
+            requestLocationPerms.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
+            )
             return
         }
 
-        // 2) オーバーレイ権限
+        // 2) 位置情報が既にOKなら、オーバーレイへ
+        if (!canDrawOverlays()) {
+            openOverlayPermissionSettings()
+        }
+    }
+
+    private fun startOverlayWithPermissions() {
+        if (!hasLocationPermission()) {
+            requestLocationPerms.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
+            )
+            return
+        }
+
         if (!canDrawOverlays()) {
             openOverlayPermissionSettings()
             return
         }
 
-        // 3) Service起動
         val intent = Intent(this, OverlayService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(intent)
@@ -102,17 +126,6 @@ class MainActivity : ComponentActivity() {
 
     private fun stopOverlay() {
         stopService(Intent(this, OverlayService::class.java))
-    }
-
-    private fun ensureLocationPermission() {
-        if (hasLocationPermission()) return
-
-        requestLocationPerms.launch(
-            arrayOf(
-                Manifest.permission.ACCESS_FINE_LOCATION,
-                Manifest.permission.ACCESS_COARSE_LOCATION
-            )
-        )
     }
 
     private fun hasLocationPermission(): Boolean {
