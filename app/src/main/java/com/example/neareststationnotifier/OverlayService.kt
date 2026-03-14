@@ -50,8 +50,6 @@ class OverlayService : Service() {
     @Volatile private var lastDisplayText: String = "loading..."
 
     private val stationApi by lazy { StationApi() }
-
-    // ★NearestStationsWorker が (context, stationApi, ...) なので合わせる
     private val stationsWorker by lazy {
         NearestStationsWorker(
             context = this,
@@ -70,12 +68,25 @@ class OverlayService : Service() {
             updateCount += 1
             val nowStr = timeFmt.format(Date())
 
-            lastDisplayText = if (loc == null) {
-                "cnt:$updateCount $nowStr\nloc:null\n$lastApiStatus\nstations:\n$lastStationsText"
+            // ★毎回Prefsを読む（OFFなら「現在/次」だけ）
+            val showDebugOverlay = DebugPrefs.getShowDebug(this@OverlayService)
+
+            lastDisplayText = if (!showDebugOverlay) {
+                // デバッグOFF：NearestStationsWorkerが返す「現在/次 + top3」から
+                // 「現在/次」だけ抜き出して表示（最初の2行だけ）
+                val lines = lastStationsText.lines()
+                val cur = lines.getOrNull(0) ?: "現在: --"
+                val next = lines.getOrNull(1) ?: "次: --"
+                "$cur\n$next"
             } else {
-                val latStr = String.format(Locale.US, "%.5f", loc.latitude)
-                val lonStr = String.format(Locale.US, "%.5f", loc.longitude)
-                "cnt:$updateCount $nowStr\nlat:$latStr lon:$lonStr\n$lastApiStatus\nstations:\n$lastStationsText"
+                // デバッグON：従来どおり詳細表示
+                if (loc == null) {
+                    "cnt:$updateCount $nowStr\nloc:null\n$lastApiStatus\nstations:\n$lastStationsText"
+                } else {
+                    val latStr = String.format(Locale.US, "%.5f", loc.latitude)
+                    val lonStr = String.format(Locale.US, "%.5f", loc.longitude)
+                    "cnt:$updateCount $nowStr\nlat:$latStr lon:$lonStr\n$lastApiStatus\nstations:\n$lastStationsText"
+                }
             }
 
             if (ui.isPanelShowing()) {
