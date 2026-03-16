@@ -19,15 +19,19 @@ import androidx.core.content.ContextCompat
 
 class MainActivity : ComponentActivity() {
 
-    // 起動直後の「連続誘導」を1回だけやるためのフラグ
+    // 初回の連続誘導を1回だけ
     private var didInitialPermissionFlow = false
+
+    private val requestPostNotifications =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { _ ->
+            // 通知の結果が返ってきたら次へ（位置情報→オーバーレイ）
+            continueInitialPermissionFlow()
+        }
 
     private val requestLocationPerms =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { _ ->
-            // 位置情報の結果が返ってきたら、続けてオーバーレイへ
-            if (hasLocationPermission() && !canDrawOverlays()) {
-                openOverlayPermissionSettings()
-            }
+            // 位置情報の結果が返ってきたら次へ（オーバーレイ）
+            continueInitialPermissionFlow()
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -37,7 +41,6 @@ class MainActivity : ComponentActivity() {
             MaterialTheme {
                 var showDebug by remember { mutableStateOf(DebugPrefs.getShowDebug(this)) }
 
-                // 初回表示時に「位置情報→オーバーレイ」を連続で誘導
                 LaunchedEffect(Unit) {
                     if (!didInitialPermissionFlow) {
                         didInitialPermissionFlow = true
@@ -82,8 +85,44 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * 初回起動フロー：通知 → 位置情報 → オーバーレイ
+     */
     private fun startInitialPermissionFlow() {
-        // 1) 位置情報が無ければまず要求（結果コールバックでオーバーレイへ続く）
+        // 1) 通知（Android 13+）
+        if (!hasPostNotificationsPermission()) {
+            requestPostNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+            return
+        }
+        // 2) 位置情報
+        if (!hasLocationPermission()) {
+            requestLocationPerms.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
+            )
+            return
+        }
+        // 3) オーバーレイ（設定画面）
+        if (!canDrawOverlays()) {
+            openOverlayPermissionSettings()
+        }
+    }
+
+    /**
+     * コールバック後に「次の未許可」を順に進める
+     */
+    private fun continueInitialPermissionFlow() {
+        // 通知が未許可なら再要求（ユーザーが拒否した場合もここに来る）
+        if (!hasPostNotificationsPermission()) {
+            if (Build.VERSION.SDK_INT >= 33) {
+                requestPostNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+            return
+        }
+
+        // 位置情報が未許可なら要求
         if (!hasLocationPermission()) {
             requestLocationPerms.launch(
                 arrayOf(
@@ -94,13 +133,22 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        // 2) 位置情報が既にOKなら、オーバーレイへ
+        // オーバーレイが未許可なら設定へ
         if (!canDrawOverlays()) {
             openOverlayPermissionSettings()
         }
     }
 
     private fun startOverlayWithPermissions() {
+        // 通知（Android 13+）
+        if (!hasPostNotificationsPermission()) {
+            if (Build.VERSION.SDK_INT >= 33) {
+                requestPostNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+            return
+        }
+
+        // 位置情報
         if (!hasLocationPermission()) {
             requestLocationPerms.launch(
                 arrayOf(
@@ -111,6 +159,7 @@ class MainActivity : ComponentActivity() {
             return
         }
 
+        // オーバーレイ
         if (!canDrawOverlays()) {
             openOverlayPermissionSettings()
             return
@@ -132,6 +181,12 @@ class MainActivity : ComponentActivity() {
         val fine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
         val coarse = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
         return fine == PackageManager.PERMISSION_GRANTED || coarse == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun hasPostNotificationsPermission(): Boolean {
+        if (Build.VERSION.SDK_INT < 33) return true
+        val p = ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+        return p == PackageManager.PERMISSION_GRANTED
     }
 
     private fun canDrawOverlays(): Boolean =
