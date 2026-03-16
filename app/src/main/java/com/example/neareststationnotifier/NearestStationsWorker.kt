@@ -1,6 +1,7 @@
 package com.example.neareststationnotifier
 
 import android.content.Context
+import android.location.Location
 
 class NearestStationsWorker(
     private val context: Context,
@@ -10,15 +11,23 @@ class NearestStationsWorker(
     private var predictorState = NextStationPredictor.State()
     private var prevFix: Pair<Double, Double>? = null
 
-    fun fetchStationsText(lat: Double, lon: Double): String {
+    fun fetchStationsText(loc: Location): String {
+        val lat = loc.latitude
+        val lon = loc.longitude
         val list = stationApi.getNearestStations(lat, lon)
+
+        // ハードな路線フィルタは行わず、密集地安定のため少し広めに見る
+        val candidates = list.take(12)
 
         val cur = Pair(lat, lon)
         val r = predictor.predict(
             prevLatLon = prevFix,
             curLatLon = cur,
-            candidates = list.take(5),
-            state = predictorState
+            candidates = candidates,
+            state = predictorState,
+            speedMps = if (loc.hasSpeed()) loc.speed.toDouble() else null,
+            bearingDeg = if (loc.hasBearing()) loc.bearing.toDouble() else null,
+            accuracyM = if (loc.hasAccuracy()) loc.accuracy.toDouble() else null
         )
         predictorState = r.state
         prevFix = cur
@@ -26,7 +35,6 @@ class NearestStationsWorker(
         val currentLine = r.currentName?.let { "現在: $it" } ?: "現在: --"
         val nextLine = r.nextName?.let { "次: $it" } ?: "次: --"
 
-        // ★ここで毎回Prefsを読む（スイッチ変更が次回更新から反映される）
         val showDebugOverlay = DebugPrefs.getShowDebug(context)
 
         return buildString {
@@ -35,6 +43,7 @@ class NearestStationsWorker(
             if (showDebugOverlay && r.debugText.isNotBlank()) {
                 append(r.debugText).append("\n")
             }
+            // デバッグ下部は従来通り（APIのnext/prevは空が多い想定）
             append(StationFormatter.formatTop3WithNextPrev(list, cur))
         }
     }
