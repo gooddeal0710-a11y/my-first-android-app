@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.location.Location
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -68,18 +69,14 @@ class OverlayService : Service() {
             updateCount += 1
             val nowStr = timeFmt.format(Date())
 
-            // ★毎回Prefsを読む（OFFなら「現在/次」だけ）
             val showDebugOverlay = DebugPrefs.getShowDebug(this@OverlayService)
 
             lastDisplayText = if (!showDebugOverlay) {
-                // デバッグOFF：NearestStationsWorkerが返す「現在/次 + top3」から
-                // 「現在/次」だけ抜き出して表示（最初の2行だけ）
                 val lines = lastStationsText.lines()
                 val cur = lines.getOrNull(0) ?: "現在: --"
                 val next = lines.getOrNull(1) ?: "次: --"
                 "$cur\n$next"
             } else {
-                // デバッグON：従来どおり詳細表示
                 if (loc == null) {
                     "cnt:$updateCount $nowStr\nloc:null\n$lastApiStatus\nstations:\n$lastStationsText"
                 } else {
@@ -97,7 +94,7 @@ class OverlayService : Service() {
             val nowMs = System.currentTimeMillis()
             if (nowMs - lastStationUpdatedAtMs >= stationUpdateIntervalMs) {
                 lastStationUpdatedAtMs = nowMs
-                fetchNearestStationsAsync(locNonNull.latitude, locNonNull.longitude)
+                fetchNearestStationsAsync(locNonNull)
             }
         }
     }
@@ -147,15 +144,16 @@ class OverlayService : Service() {
         }
     }
 
-    private fun fetchNearestStationsAsync(lat: Double, lon: Double) {
+    private fun fetchNearestStationsAsync(loc: Location) {
         thread(start = true) {
             try {
                 lastApiStatus = "api:fetching"
-                lastStationsText = stationsWorker.fetchStationsText(lat, lon)
+                lastStationsText = stationsWorker.fetchStationsText(loc)
                 lastApiStatus = "api:ok"
 
                 if (ui.isPanelShowing()) {
-                    mainHandler.post { ui.setPanelText(lastDisplayText) }
+                    // 駅テキスト更新直後に表示へ反映（次の位置更新を待たない）
+                    mainHandler.post { ui.setPanelText(lastStationsText) }
                 }
             } catch (_: Exception) {
                 lastApiStatus = "api:err"
