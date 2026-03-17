@@ -7,7 +7,6 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.content.pm.ServiceInfo
 import android.location.Location
 import android.net.Uri
 import android.os.Build
@@ -48,8 +47,7 @@ class OverlayService : Service() {
     @Volatile private var lastStationUpdatedAtMs: Long = 0L
     private val stationUpdateIntervalMs = 10_000L
 
-    // 最後に受け取ったLocation（駅取得後の再描画に使う）
-    @Volatile private var lastLoc: Location? = null
+    @Volatile private var lastDisplayText: String = "loading..."
 
     private val stationApi by lazy { StationApi() }
     private val stationsWorker by lazy {
@@ -64,46 +62,39 @@ class OverlayService : Service() {
         OverlayUiController(this, wm)
     }
 
-    private fun buildDisplayText(loc: Location?): String {
+    private fun rebuildAndShow(loc: Location?) {
         val nowStr = timeFmt.format(Date())
         val showDebugOverlay = DebugPrefs.getShowDebug(this)
 
-        return if (!showDebugOverlay) {
-            // OFF時は「現在/次」+「top3」まで固定で出す（無いなら -- を出す）
+        lastDisplayText = if (!showDebugOverlay) {
+            // OFF: 常に2行固定（top3等は絶対に混ぜない）
             val lines = lastStationsText.lines()
             val cur = lines.getOrNull(0) ?: "現在: --"
             val next = lines.getOrNull(1) ?: "次: --"
-            val top1 = lines.getOrNull(2) ?: ""
-            val top2 = lines.getOrNull(3) ?: ""
-            val top3 = lines.getOrNull(4) ?: ""
-            listOf(cur, next, top1, top2, top3).filter { it.isNotBlank() }.joinToString("\n")
+            "$cur\n$next"
         } else {
-            // ON時は必ずヘッダ4行 + stations本文
-            val header = if (loc == null) {
-                "cnt:$updateCount $nowStr\nloc:null\n$lastApiStatus\nstations:"
+            // ON: 常にヘッダ付き
+            if (loc == null) {
+                "cnt:$updateCount $nowStr\nloc:null\n$lastApiStatus\nstations:\n$lastStationsText"
             } else {
                 val latStr = String.format(Locale.US, "%.5f", loc.latitude)
                 val lonStr = String.format(Locale.US, "%.5f", loc.longitude)
-                "cnt:$updateCount $nowStr\nlat:$latStr lon:$lonStr\n$lastApiStatus\nstations:"
+                "cnt:$updateCount $nowStr\nlat:$latStr lon:$lonStr\n$lastApiStatus\nstations:\n$lastStationsText"
             }
-            "$header\n$lastStationsText"
         }
-    }
 
-    private fun renderAndShow(loc: Location?) {
-        if (!ui.isPanelShowing()) return
-        val text = buildDisplayText(loc)
-        mainHandler.post { ui.setPanelText(text) }
+        if (ui.isPanelShowing()) {
+            mainHandler.post { ui.setPanelText(lastDisplayText) }
+        }
     }
 
     private val locationCallback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
             val loc = result.lastLocation
             updateCount += 1
-            lastLoc = loc
 
-            // 表示は常にこの経路だけ
-            renderAndShow(loc)
+            // 表示は常に lastDisplayText に統一
+            rebuildAndShow(loc)
 
             val locNonNull = loc ?: return
             val nowMs = System.currentTimeMillis()
@@ -145,34 +136,26 @@ class OverlayService : Service() {
         fused.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
     }
 
-    override fun onTaskRemoved(rootIntent: Intent?) {
-        stopSelf()
-        super.onTaskRemoved(rootIntent)
+    private fun fetchNearestStationsAsync(loc: Location) {
+        thread(start = true) {
+            try {
+                lastApiStatus = "api:fetching"
+                lastStationsText = stationsWorker.fetchStationsText(loc)
+                lastApiStatus = "api:ok"
+            } catch (_: Exception) {
+                lastApiStatus = "api:err"
+            }
+            // 駅取得後も同じルールで表示を再生成して出す
+            rebuildAndShow(loc)
+        }
     }
 
     private fun startAsLocationFgs() {
         val n = createNotification()
         if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
+            startForeground(1, n, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
         } else {
             startForeground(1, n)
-        }
-    }
-
-    private fun fetchNearestStationsAsync(loc: Location) {
-        thread(start = true) {
-            try {
-                lastApiStatus = "api:fetching"
-                // fetching表示を即反映（ヘッダが消えない）
-                renderAndShow(lastLoc)
-
-                lastStationsText = stationsWorker.fetchStationsText(loc)
-                lastApiStatus = "api:ok"
-                renderAndShow(lastLoc)
-            } catch (_: Exception) {
-                lastApiStatus = "api:err"
-                renderAndShow(lastLoc)
-            }
         }
     }
 
