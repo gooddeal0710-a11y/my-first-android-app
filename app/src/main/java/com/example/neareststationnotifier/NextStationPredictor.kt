@@ -14,6 +14,7 @@ class NextStationPredictor(
 ) {
     data class State(
         val currentName: String? = null,
+        // ここが重要：単一lineではなく「同名駅に紐づく路線群」を保持
         val currentLines: Set<String> = emptySet(),
         val pendingSwitchName: String? = null,
         val pendingCount: Int = 0
@@ -52,7 +53,6 @@ class NextStationPredictor(
             else -> null
         }
 
-        // 現在駅の路線群：同名駅の候補から全部拾う（表記揺れ対策）
         fun linesForStationName(name: String): Set<String> =
             candidates.asSequence()
                 .filter { it.name == name }
@@ -158,7 +158,7 @@ class NextStationPredictor(
 
         val normLines = currentLines.map { normalizeLine(it) }.filter { it.isNotBlank() }.toSet()
 
-        // 「現在駅の路線群」に一致する候補を優先
+        // 現在駅の路線群に一致する候補を優先
         val sameLinePool = if (normLines.isNotEmpty()) {
             basePool.filter { normalizeLine(it.line) in normLines }
         } else emptyList()
@@ -183,7 +183,7 @@ class NextStationPredictor(
 
             var score = wDir * dirScore + wDist * distScore
 
-            // 電車中は「路線違い」「後方」を強く抑制（フォールバック時の暴れ防止）
+            // 電車中はフォールバック時の暴れを抑える
             if (trainMode && normLines.isNotEmpty()) {
                 val sameLine = normalizeLine(c.line) in normLines
                 if (!sameLine) score -= otherLinePenaltyTrain
