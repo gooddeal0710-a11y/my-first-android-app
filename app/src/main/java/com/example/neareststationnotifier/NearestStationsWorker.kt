@@ -16,6 +16,7 @@ class NearestStationsWorker(
         val lon = loc.longitude
         val list = stationApi.getNearestStations(lat, lon)
 
+        // 密集地対策：少し多めに
         val candidates = list.take(20)
 
         val cur = Pair(lat, lon)
