@@ -3,13 +3,14 @@ package com.example.neareststationnotifier
 import kotlin.math.*
 
 class NextStationPredictor(
-    private val enterRadiusM: Double = 120.0,      // "入る"半径
-    private val exitRadiusM: Double = 180.0,       // "出る"半径（> enter）
-    private val switchMarginM: Double = 80.0,      // 切替マージン
-    private val trainSpeedThreshMps: Double = 5.0, // 電車モード閾値（約18km/h）
-    private val wDir: Double = 0.60,               // 前方性の重み
-    private val wDist: Double = 0.40,              // 近さの重み
-    private val lineBonusVal: Double = 0.05        // 同一路線ボーナス（弱）
+    private val enterRadiusM: Double = 120.0,
+    private val exitRadiusM: Double = 180.0,
+    private val switchMarginM: Double = 80.0,
+    private val trainSpeedThreshMps: Double = 5.0, // 約18km/h
+    private val wDir: Double = 0.60,
+    private val wDist: Double = 0.40,
+    private val otherLinePenaltyTrain: Double = 0.60, // 電車中の他路線ペナルティ
+    private val backwardPenaltyTrain: Double = 0.50    // 電車中の後方ペナルティ
 ) {
 
     data class State(
@@ -59,7 +60,7 @@ class NextStationPredictor(
         var decision = "keep"
         var pend = 0
 
-        // ヒステリシスで現在駅を確定/維持
+        // 現在駅：ヒステリシス＋確証回数
         if (state.currentName == null) {
             if (nearestDist <= enterRadiusM) {
                 newState = State(nearest.name, nearest.line, null, null, 0)
@@ -109,7 +110,6 @@ class NextStationPredictor(
             }
         }
 
-        // 次駅推定：同一駅を禁止し、前方性＋距離（路線は弱ボーナス）でスコア
         val nextName = pickNextForward(
             curLatLon = curLatLon,
             candidates = candidates,
@@ -132,12 +132,7 @@ class NextStationPredictor(
             if (accuracyM != null) append(" acc=").append("%.0f".format(accuracyM))
         }
 
-        return Result(
-            currentName = newState.currentName,
-            nextName = nextName,
-            state = newState,
-            debugText = dbg
-        )
+        return Result(newState.currentName, nextName, newState, dbg)
     }
 
     private fun pickNextForward(
@@ -148,8 +143,17 @@ class NextStationPredictor(
         fwdBearing: Double?,
         trainMode: Boolean
     ): String? {
-        val pool = candidates.filter { it.name != currentName }
-        if (pool.isEmpty()) return null
+        val basePool = candidates.filter { it.name != currentName }
+        if (basePool.isEmpty()) return null
+
+        val normCurLine = currentLine?.let { normalizeLine(it) }
+
+        // 同一路線プール優先（汎用）
+        val sameLinePool = if (!normCurLine.isNullOrBlank()) {
+            basePool.filter { normalizeLine(it.line) == normCurLine }
+        } else emptyList()
+
+        val pool = if (sameLinePool.isNotEmpty()) sameLinePool else basePool
 
         val dists = pool.map { distM(curLatLon, it) }.filter { it.isFinite() }
         val maxDist = dists.maxOrNull() ?: 1.0
@@ -164,13 +168,17 @@ class NextStationPredictor(
             val dirScore = if (fwdBearing != null && c.lat != null && c.lon != null) {
                 val toBr = bearingFrom(curLatLon, Pair(c.lat!!, c.lon!!))
                 val diff = angleDiffDeg(fwdBearing, toBr)
-                cos(Math.toRadians(diff)) // 前方=+1, 後方=-1
+                cos(Math.toRadians(diff))
             } else 0.0
 
-            val lineBonus = if (!currentLine.isNullOrBlank() && normalizeLine(c.line) == normalizeLine(currentLine)) lineBonusVal else 0.0
+            var score = wDir * dirScore + wDist * distScore
 
-            var score = wDir * dirScore + wDist * distScore + lineBonus
-            if (trainMode && dirScore < 0.0) score -= 0.5 // 電車中は後方を強く抑制
+            // 電車中は「路線違い」「後方」を強く抑制（保険）
+            if (trainMode && !normCurLine.isNullOrBlank()) {
+                val sameLine = normalizeLine(c.line) == normCurLine
+                if (!sameLine) score -= otherLinePenaltyTrain
+            }
+            if (trainMode && dirScore < 0.0) score -= backwardPenaltyTrain
 
             if (score > bestScore) {
                 bestScore = score
@@ -207,8 +215,8 @@ class NextStationPredictor(
 
     private fun normalizeLine(s: String): String =
         s.lowercase()
-            .replace("ＪＲ","jr")
-            .replace("（","(").replace("）",")")
+            .replace("ＪＲ", "jr")
+            .replace("（", "(").replace("）", ")")
             .replace(" ", "")
             .trim()
 }
