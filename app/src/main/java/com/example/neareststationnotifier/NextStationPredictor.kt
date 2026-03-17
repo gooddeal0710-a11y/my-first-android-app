@@ -9,15 +9,13 @@ class NextStationPredictor(
     private val trainSpeedThreshMps: Double = 5.0, // 約18km/h
     private val wDir: Double = 0.60,
     private val wDist: Double = 0.40,
-    private val otherLinePenaltyTrain: Double = 0.60, // 電車中の他路線ペナルティ
-    private val backwardPenaltyTrain: Double = 0.50    // 電車中の後方ペナルティ
+    private val otherLinePenaltyTrain: Double = 0.60,
+    private val backwardPenaltyTrain: Double = 0.50
 ) {
-
     data class State(
         val currentName: String? = null,
-        val currentLine: String? = null,
+        val currentLines: Set<String> = emptySet(),
         val pendingSwitchName: String? = null,
-        val pendingSwitchLine: String? = null,
         val pendingCount: Int = 0
     )
 
@@ -37,9 +35,7 @@ class NextStationPredictor(
         bearingDeg: Double? = null,
         accuracyM: Double? = null
     ): Result {
-        if (candidates.isEmpty()) {
-            return Result(state.currentName, null, state, "dbg: no candidates")
-        }
+        if (candidates.isEmpty()) return Result(state.currentName, null, state, "dbg: no candidates")
 
         val nearest = candidates.minByOrNull { distM(curLatLon, it) }!!
         val nearestDist = distM(curLatLon, nearest)
@@ -56,19 +52,30 @@ class NextStationPredictor(
             else -> null
         }
 
+        // 現在駅の路線群：同名駅の候補から全部拾う（表記揺れ対策）
+        fun linesForStationName(name: String): Set<String> =
+            candidates.asSequence()
+                .filter { it.name == name }
+                .map { normalizeLine(it.line) }
+                .filter { it.isNotBlank() }
+                .toSet()
+
         var newState = state
         var decision = "keep"
         var pend = 0
 
-        // 現在駅：ヒステリシス＋確証回数
         if (state.currentName == null) {
             if (nearestDist <= enterRadiusM) {
-                newState = State(nearest.name, nearest.line, null, null, 0)
+                newState = State(
+                    currentName = nearest.name,
+                    currentLines = linesForStationName(nearest.name),
+                    pendingSwitchName = null,
+                    pendingCount = 0
+                )
                 decision = "set_current_enter"
             } else {
                 newState = state.copy(
                     pendingSwitchName = nearest.name,
-                    pendingSwitchLine = nearest.line,
                     pendingCount = 1
                 )
                 decision = "pending_init"
@@ -77,7 +84,6 @@ class NextStationPredictor(
             if (currentDist <= exitRadiusM) {
                 newState = state.copy(
                     pendingSwitchName = null,
-                    pendingSwitchLine = null,
                     pendingCount = 0
                 )
                 decision = "keep_hysteresis"
@@ -88,13 +94,18 @@ class NextStationPredictor(
                     val nextCount = if (same) state.pendingCount + 1 else 1
                     pend = nextCount
                     val confirmTimes = if (trainMode) 1 else 2
+
                     if (nextCount >= confirmTimes) {
-                        newState = State(nearest.name, nearest.line, null, null, 0)
+                        newState = State(
+                            currentName = nearest.name,
+                            currentLines = linesForStationName(nearest.name),
+                            pendingSwitchName = null,
+                            pendingCount = 0
+                        )
                         decision = "switch_confirmed"
                     } else {
                         newState = state.copy(
                             pendingSwitchName = nearest.name,
-                            pendingSwitchLine = nearest.line,
                             pendingCount = nextCount
                         )
                         decision = "switch_pending"
@@ -102,7 +113,6 @@ class NextStationPredictor(
                 } else {
                     newState = state.copy(
                         pendingSwitchName = null,
-                        pendingSwitchLine = null,
                         pendingCount = 0
                     )
                     decision = "keep_reset"
@@ -114,13 +124,13 @@ class NextStationPredictor(
             curLatLon = curLatLon,
             candidates = candidates,
             currentName = newState.currentName,
-            currentLine = newState.currentLine,
+            currentLines = newState.currentLines,
             fwdBearing = fwdBearing,
             trainMode = trainMode
         )
 
         val dbg = buildString {
-            append("dbg line=").append(newState.currentLine ?: "--")
+            append("dbg lines=").append(if (newState.currentLines.isEmpty()) "--" else newState.currentLines.joinToString("|"))
             append(" train=").append(trainMode)
             append(" nearest=").append(nearest.name).append("@").append(nearest.line)
             append(" nd=").append(nearestDist.toInt()).append("m")
@@ -139,18 +149,18 @@ class NextStationPredictor(
         curLatLon: Pair<Double, Double>,
         candidates: List<StationCandidate>,
         currentName: String?,
-        currentLine: String?,
+        currentLines: Set<String>,
         fwdBearing: Double?,
         trainMode: Boolean
     ): String? {
         val basePool = candidates.filter { it.name != currentName }
         if (basePool.isEmpty()) return null
 
-        val normCurLine = currentLine?.let { normalizeLine(it) }
+        val normLines = currentLines.map { normalizeLine(it) }.filter { it.isNotBlank() }.toSet()
 
-        // 同一路線プール優先（汎用）
-        val sameLinePool = if (!normCurLine.isNullOrBlank()) {
-            basePool.filter { normalizeLine(it.line) == normCurLine }
+        // 「現在駅の路線群」に一致する候補を優先
+        val sameLinePool = if (normLines.isNotEmpty()) {
+            basePool.filter { normalizeLine(it.line) in normLines }
         } else emptyList()
 
         val pool = if (sameLinePool.isNotEmpty()) sameLinePool else basePool
@@ -166,16 +176,16 @@ class NextStationPredictor(
             val distScore = if (d.isFinite()) 1.0 - (d / maxDist).coerceIn(0.0, 1.0) else 0.0
 
             val dirScore = if (fwdBearing != null && c.lat != null && c.lon != null) {
-                val toBr = bearingFrom(curLatLon, Pair(c.lat!!, c.lon!!))
+                val toBr = bearingFrom(curLatLon, Pair(c.lat, c.lon))
                 val diff = angleDiffDeg(fwdBearing, toBr)
                 cos(Math.toRadians(diff))
             } else 0.0
 
             var score = wDir * dirScore + wDist * distScore
 
-            // 電車中は「路線違い」「後方」を強く抑制（保険）
-            if (trainMode && !normCurLine.isNullOrBlank()) {
-                val sameLine = normalizeLine(c.line) == normCurLine
+            // 電車中は「路線違い」「後方」を強く抑制（フォールバック時の暴れ防止）
+            if (trainMode && normLines.isNotEmpty()) {
+                val sameLine = normalizeLine(c.line) in normLines
                 if (!sameLine) score -= otherLinePenaltyTrain
             }
             if (trainMode && dirScore < 0.0) score -= backwardPenaltyTrain
@@ -208,8 +218,7 @@ class NextStationPredictor(
     }
 
     private fun angleDiffDeg(a: Double, b: Double): Double {
-        var d = (a - b + 540.0) % 360.0 - 180.0
-        if (d < -180) d += 360.0
+        val d = (a - b + 540.0) % 360.0 - 180.0
         return abs(d)
     }
 
