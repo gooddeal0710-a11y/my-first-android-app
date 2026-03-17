@@ -16,8 +16,8 @@ class NearestStationsWorker(
         val lon = loc.longitude
         val list = stationApi.getNearestStations(lat, lon)
 
-        // ハードな路線フィルタは行わず、密集地安定のため少し広めに見る
-        val candidates = list.take(12)
+        // 密集地で同一路線候補が落ちないよう少し多めに
+        val candidates = list.take(20)
 
         val cur = Pair(lat, lon)
         val r = predictor.predict(
@@ -43,7 +43,7 @@ class NearestStationsWorker(
             if (showDebugOverlay && r.debugText.isNotBlank()) {
                 append(r.debugText).append("\n")
             }
-            // デバッグ下部は従来通り（APIのnext/prevは空が多い想定）
+            // 下部は従来の候補表示（デバッグ用）
             append(StationFormatter.formatTop3WithNextPrev(list, cur))
         }
     }
