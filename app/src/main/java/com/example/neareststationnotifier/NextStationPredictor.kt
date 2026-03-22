@@ -6,27 +6,26 @@ class NextStationPredictor(
     private val enterRadiusM: Double = 120.0,
     private val exitRadiusM: Double = 180.0,
     private val switchMarginM: Double = 80.0,
-    private val trainSpeedThreshMps: Double = 5.0, // 約18km/h
+
+    private val trainSpeedThreshMps: Double = 5.0,      // 約18km/h
+    private val trainHoldMs: Long = 90_000L,             // 追加：電車モード維持時間（90秒）
+
     private val wDir: Double = 0.60,
     private val wDist: Double = 0.40,
 
-    // 路線違いペナルティ：徒歩/低速でも少し効かせる（フォールバック暴れ防止）
     private val otherLinePenaltySlow: Double = 0.25,
-    // 電車中は強く
     private val otherLinePenaltyTrain: Double = 0.85,
-
-    // 電車中の後方ペナルティ
     private val backwardPenaltyTrain: Double = 0.60
 ) {
     data class State(
         val currentName: String? = null,
         val currentLines: Set<String> = emptySet(),
-
-        // 追加：直前の現在駅（切替直後の next 誤爆を防ぐ）
         val lastName: String? = null,
-
         val pendingSwitchName: String? = null,
-        val pendingCount: Int = 0
+        val pendingCount: Int = 0,
+
+        // 追加：trainモードのホールド
+        val trainHoldUntilMs: Long = 0L
     )
 
     data class Result(
@@ -47,14 +46,19 @@ class NextStationPredictor(
     ): Result {
         if (candidates.isEmpty()) return Result(state.currentName, null, state, "dbg: no candidates")
 
+        val nowMs = System.currentTimeMillis()
+
+        // 速度でtrain検出 → 検出したら一定時間ホールド
+        val speedTrain = (speedMps ?: 0.0) >= trainSpeedThreshMps
+        val holdUntil = if (speedTrain) nowMs + trainHoldMs else state.trainHoldUntilMs
+        val trainMode = speedTrain || (nowMs < holdUntil)
+
         val nearest = candidates.minByOrNull { distM(curLatLon, it) }!!
         val nearestDist = distM(curLatLon, nearest)
 
         val currentDist = state.currentName?.let { curName ->
             candidates.firstOrNull { it.name == curName }?.let { distM(curLatLon, it) }
         } ?: Double.POSITIVE_INFINITY
-
-        val trainMode = (speedMps ?: 0.0) >= trainSpeedThreshMps
 
         val fwdBearing = when {
             bearingDeg != null && !bearingDeg.isNaN() -> bearingDeg
@@ -69,13 +73,13 @@ class NextStationPredictor(
                 .filter { it.isNotBlank() }
                 .toSet()
 
-        var newState = state
+        var newState = state.copy(trainHoldUntilMs = holdUntil)
         var decision = "keep"
         var pend = 0
 
         if (state.currentName == null) {
             if (nearestDist <= enterRadiusM) {
-                newState = State(
+                newState = newState.copy(
                     currentName = nearest.name,
                     currentLines = linesForStationName(nearest.name),
                     lastName = null,
@@ -84,7 +88,7 @@ class NextStationPredictor(
                 )
                 decision = "set_current_enter"
             } else {
-                newState = state.copy(
+                newState = newState.copy(
                     pendingSwitchName = nearest.name,
                     pendingCount = 1
                 )
@@ -92,7 +96,7 @@ class NextStationPredictor(
             }
         } else {
             if (currentDist <= exitRadiusM) {
-                newState = state.copy(
+                newState = newState.copy(
                     pendingSwitchName = null,
                     pendingCount = 0
                 )
@@ -107,23 +111,23 @@ class NextStationPredictor(
 
                     if (nextCount >= confirmTimes) {
                         val old = state.currentName
-                        newState = State(
+                        newState = newState.copy(
                             currentName = nearest.name,
                             currentLines = linesForStationName(nearest.name),
-                            lastName = old, // ここが重要
+                            lastName = old,
                             pendingSwitchName = null,
                             pendingCount = 0
                         )
                         decision = "switch_confirmed"
                     } else {
-                        newState = state.copy(
+                        newState = newState.copy(
                             pendingSwitchName = nearest.name,
                             pendingCount = nextCount
                         )
                         decision = "switch_pending"
                     }
                 } else {
-                    newState = state.copy(
+                    newState = newState.copy(
                         pendingSwitchName = null,
                         pendingCount = 0
                     )
@@ -146,6 +150,7 @@ class NextStationPredictor(
             append("dbg lines=").append(if (newState.currentLines.isEmpty()) "--" else newState.currentLines.joinToString("|"))
             append(" last=").append(newState.lastName ?: "--")
             append(" train=").append(trainMode)
+            append(" hold=").append(max(0L, newState.trainHoldUntilMs - nowMs) / 1000).append("s")
             append(" nearest=").append(nearest.name).append("@").append(nearest.line)
             append(" nd=").append(nearestDist.toInt()).append("m")
             append(" cd=").append(if (currentDist.isFinite()) currentDist.toInt() else -1).append("m")
@@ -168,7 +173,6 @@ class NextStationPredictor(
         fwdBearing: Double?,
         trainMode: Boolean
     ): String? {
-        // current と last は next 候補から除外（切替直後の誤爆対策）
         val basePool = candidates.filter { it.name != currentName && it.name != lastName }
         if (basePool.isEmpty()) return null
 
@@ -198,15 +202,11 @@ class NextStationPredictor(
 
             var score = wDir * dirScore + wDist * distScore
 
-            // 路線違いペナルティ：フォールバックでも効かせる
             if (normLines.isNotEmpty()) {
                 val sameLine = normalizeLine(c.line) in normLines
-                if (!sameLine) {
-                    score -= if (trainMode) otherLinePenaltyTrain else otherLinePenaltySlow
-                }
+                if (!sameLine) score -= if (trainMode) otherLinePenaltyTrain else otherLinePenaltySlow
             }
 
-            // 電車中は後方を強く抑制
             if (trainMode && dirScore < 0.0) score -= backwardPenaltyTrain
 
             if (score > bestScore) {
