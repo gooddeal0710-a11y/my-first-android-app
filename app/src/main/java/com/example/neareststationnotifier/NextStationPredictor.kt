@@ -9,13 +9,22 @@ class NextStationPredictor(
     private val trainSpeedThreshMps: Double = 5.0, // 約18km/h
     private val wDir: Double = 0.60,
     private val wDist: Double = 0.40,
-    private val otherLinePenaltyTrain: Double = 0.60,
-    private val backwardPenaltyTrain: Double = 0.50
+
+    // 路線違いペナルティ：徒歩/低速でも少し効かせる（フォールバック暴れ防止）
+    private val otherLinePenaltySlow: Double = 0.25,
+    // 電車中は強く
+    private val otherLinePenaltyTrain: Double = 0.85,
+
+    // 電車中の後方ペナルティ
+    private val backwardPenaltyTrain: Double = 0.60
 ) {
     data class State(
         val currentName: String? = null,
-        // ここが重要：単一lineではなく「同名駅に紐づく路線群」を保持
         val currentLines: Set<String> = emptySet(),
+
+        // 追加：直前の現在駅（切替直後の next 誤爆を防ぐ）
+        val lastName: String? = null,
+
         val pendingSwitchName: String? = null,
         val pendingCount: Int = 0
     )
@@ -69,6 +78,7 @@ class NextStationPredictor(
                 newState = State(
                     currentName = nearest.name,
                     currentLines = linesForStationName(nearest.name),
+                    lastName = null,
                     pendingSwitchName = null,
                     pendingCount = 0
                 )
@@ -96,9 +106,11 @@ class NextStationPredictor(
                     val confirmTimes = if (trainMode) 1 else 2
 
                     if (nextCount >= confirmTimes) {
+                        val old = state.currentName
                         newState = State(
                             currentName = nearest.name,
                             currentLines = linesForStationName(nearest.name),
+                            lastName = old, // ここが重要
                             pendingSwitchName = null,
                             pendingCount = 0
                         )
@@ -125,12 +137,14 @@ class NextStationPredictor(
             candidates = candidates,
             currentName = newState.currentName,
             currentLines = newState.currentLines,
+            lastName = newState.lastName,
             fwdBearing = fwdBearing,
             trainMode = trainMode
         )
 
         val dbg = buildString {
             append("dbg lines=").append(if (newState.currentLines.isEmpty()) "--" else newState.currentLines.joinToString("|"))
+            append(" last=").append(newState.lastName ?: "--")
             append(" train=").append(trainMode)
             append(" nearest=").append(nearest.name).append("@").append(nearest.line)
             append(" nd=").append(nearestDist.toInt()).append("m")
@@ -150,15 +164,16 @@ class NextStationPredictor(
         candidates: List<StationCandidate>,
         currentName: String?,
         currentLines: Set<String>,
+        lastName: String?,
         fwdBearing: Double?,
         trainMode: Boolean
     ): String? {
-        val basePool = candidates.filter { it.name != currentName }
+        // current と last は next 候補から除外（切替直後の誤爆対策）
+        val basePool = candidates.filter { it.name != currentName && it.name != lastName }
         if (basePool.isEmpty()) return null
 
         val normLines = currentLines.map { normalizeLine(it) }.filter { it.isNotBlank() }.toSet()
 
-        // 現在駅の路線群に一致する候補を優先
         val sameLinePool = if (normLines.isNotEmpty()) {
             basePool.filter { normalizeLine(it.line) in normLines }
         } else emptyList()
@@ -183,11 +198,15 @@ class NextStationPredictor(
 
             var score = wDir * dirScore + wDist * distScore
 
-            // 電車中はフォールバック時の暴れを抑える
-            if (trainMode && normLines.isNotEmpty()) {
+            // 路線違いペナルティ：フォールバックでも効かせる
+            if (normLines.isNotEmpty()) {
                 val sameLine = normalizeLine(c.line) in normLines
-                if (!sameLine) score -= otherLinePenaltyTrain
+                if (!sameLine) {
+                    score -= if (trainMode) otherLinePenaltyTrain else otherLinePenaltySlow
+                }
             }
+
+            // 電車中は後方を強く抑制
             if (trainMode && dirScore < 0.0) score -= backwardPenaltyTrain
 
             if (score > bestScore) {
