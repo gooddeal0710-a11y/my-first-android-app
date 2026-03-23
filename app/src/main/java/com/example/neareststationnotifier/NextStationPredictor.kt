@@ -7,8 +7,8 @@ class NextStationPredictor(
     private val exitRadiusM: Double = 180.0,
     private val switchMarginM: Double = 80.0,
 
-    private val trainSpeedThreshMps: Double = 5.0,      // 約18km/h
-    private val trainHoldMs: Long = 90_000L,             // 追加：電車モード維持時間（90秒）
+    private val trainSpeedThreshMps: Double = 5.0,
+    private val trainHoldMs: Long = 90_000L,
 
     private val wDir: Double = 0.60,
     private val wDist: Double = 0.40,
@@ -19,12 +19,19 @@ class NextStationPredictor(
 ) {
     data class State(
         val currentName: String? = null,
+
+        // 現在地に最も近い「現在駅レコード」の路線（候補）
+        val primaryLine: String? = null,
+
+        // train中はこれを固定して使う（強い）
+        val lockedLine: String? = null,
+
         val currentLines: Set<String> = emptySet(),
         val lastName: String? = null,
+
         val pendingSwitchName: String? = null,
         val pendingCount: Int = 0,
 
-        // 追加：trainモードのホールド
         val trainHoldUntilMs: Long = 0L
     )
 
@@ -47,8 +54,6 @@ class NextStationPredictor(
         if (candidates.isEmpty()) return Result(state.currentName, null, state, "dbg: no candidates")
 
         val nowMs = System.currentTimeMillis()
-
-        // 速度でtrain検出 → 検出したら一定時間ホールド
         val speedTrain = (speedMps ?: 0.0) >= trainSpeedThreshMps
         val holdUntil = if (speedTrain) nowMs + trainHoldMs else state.trainHoldUntilMs
         val trainMode = speedTrain || (nowMs < holdUntil)
@@ -73,15 +78,25 @@ class NextStationPredictor(
                 .filter { it.isNotBlank() }
                 .toSet()
 
+        fun primaryLineForStationName(name: String): String? {
+            val best = candidates
+                .filter { it.name == name }
+                .minByOrNull { distM(curLatLon, it) }
+            return best?.line?.let { normalizeLine(it) }?.takeIf { it.isNotBlank() }
+        }
+
         var newState = state.copy(trainHoldUntilMs = holdUntil)
         var decision = "keep"
         var pend = 0
 
         if (state.currentName == null) {
             if (nearestDist <= enterRadiusM) {
+                val nm = nearest.name
+                val pl = primaryLineForStationName(nm)
                 newState = newState.copy(
-                    currentName = nearest.name,
-                    currentLines = linesForStationName(nearest.name),
+                    currentName = nm,
+                    primaryLine = pl,
+                    currentLines = linesForStationName(nm),
                     lastName = null,
                     pendingSwitchName = null,
                     pendingCount = 0
@@ -111,9 +126,12 @@ class NextStationPredictor(
 
                     if (nextCount >= confirmTimes) {
                         val old = state.currentName
+                        val nm = nearest.name
+                        val pl = primaryLineForStationName(nm)
                         newState = newState.copy(
-                            currentName = nearest.name,
-                            currentLines = linesForStationName(nearest.name),
+                            currentName = nm,
+                            primaryLine = pl,
+                            currentLines = linesForStationName(nm),
                             lastName = old,
                             pendingSwitchName = null,
                             pendingCount = 0
@@ -136,10 +154,20 @@ class NextStationPredictor(
             }
         }
 
+        // --- train中の路線ロック ---
+        // train=true なら lockedLine を優先して維持。無ければ primaryLine でロック開始。
+        // train=false なら解除（徒歩＝乗換の可能性が高い）
+        val locked = when {
+            trainMode -> newState.lockedLine ?: newState.primaryLine
+            else -> null
+        }
+        newState = newState.copy(lockedLine = locked)
+
         val nextName = pickNextForward(
             curLatLon = curLatLon,
             candidates = candidates,
             currentName = newState.currentName,
+            currentLine = newState.lockedLine ?: newState.primaryLine,
             currentLines = newState.currentLines,
             lastName = newState.lastName,
             fwdBearing = fwdBearing,
@@ -147,7 +175,10 @@ class NextStationPredictor(
         )
 
         val dbg = buildString {
-            append("dbg lines=").append(if (newState.currentLines.isEmpty()) "--" else newState.currentLines.joinToString("|"))
+            append("dbg currentLine=").append(newState.lockedLine ?: newState.primaryLine ?: "--")
+            append(" locked=").append(newState.lockedLine ?: "--")
+            append(" primary=").append(newState.primaryLine ?: "--")
+            append(" lines=").append(if (newState.currentLines.isEmpty()) "--" else newState.currentLines.joinToString("|"))
             append(" last=").append(newState.lastName ?: "--")
             append(" train=").append(trainMode)
             append(" hold=").append(max(0L, newState.trainHoldUntilMs - nowMs) / 1000).append("s")
@@ -168,6 +199,7 @@ class NextStationPredictor(
         curLatLon: Pair<Double, Double>,
         candidates: List<StationCandidate>,
         currentName: String?,
+        currentLine: String?,
         currentLines: Set<String>,
         lastName: String?,
         fwdBearing: Double?,
@@ -176,9 +208,12 @@ class NextStationPredictor(
         val basePool = candidates.filter { it.name != currentName && it.name != lastName }
         if (basePool.isEmpty()) return null
 
+        val normCurrent = currentLine?.let { normalizeLine(it) }?.takeIf { it.isNotBlank() }
         val normLines = currentLines.map { normalizeLine(it) }.filter { it.isNotBlank() }.toSet()
 
-        val sameLinePool = if (normLines.isNotEmpty()) {
+        val sameLinePool = if (normCurrent != null) {
+            basePool.filter { normalizeLine(it.line) == normCurrent }
+        } else if (normLines.isNotEmpty()) {
             basePool.filter { normalizeLine(it.line) in normLines }
         } else emptyList()
 
@@ -202,9 +237,13 @@ class NextStationPredictor(
 
             var score = wDir * dirScore + wDist * distScore
 
-            if (normLines.isNotEmpty()) {
-                val sameLine = normalizeLine(c.line) in normLines
-                if (!sameLine) score -= if (trainMode) otherLinePenaltyTrain else otherLinePenaltySlow
+            // フォールバック時の暴れ防止：路線違いを減点
+            if (normCurrent != null) {
+                val same = normalizeLine(c.line) == normCurrent
+                if (!same) score -= if (trainMode) otherLinePenaltyTrain else otherLinePenaltySlow
+            } else if (normLines.isNotEmpty()) {
+                val same = normalizeLine(c.line) in normLines
+                if (!same) score -= if (trainMode) otherLinePenaltyTrain else otherLinePenaltySlow
             }
 
             if (trainMode && dirScore < 0.0) score -= backwardPenaltyTrain
