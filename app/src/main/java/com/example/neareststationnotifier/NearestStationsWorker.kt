@@ -37,12 +37,31 @@ class NearestStationsWorker(
 
         val showDebugOverlay = DebugPrefs.getShowDebug(context)
 
+        // ★追加：APIの戻り値（上位N件）をそのまま表示
+        val apiTopN = 12
+        val apiListText = list.take(apiTopN).mapIndexed { i, s ->
+            val dist = s.distanceRaw.ifBlank { "--" }
+            val line = s.line.ifBlank { "--" }
+            val company = s.company.ifBlank { "--" }
+            val next = s.next.ifBlank { "--" }
+            val prev = s.prev.ifBlank { "--" }
+            "${i + 1}. ${s.name} / $line / $company / dist=$dist / next=$next prev=$prev"
+        }.joinToString("\n")
+
         return buildString {
             append(currentLine).append("\n")
             append(nextLine).append("\n")
+
             if (showDebugOverlay && r.debugText.isNotBlank()) {
                 append(r.debugText).append("\n")
             }
+
+            if (showDebugOverlay) {
+                append("api stations(top ").append(apiTopN).append("):\n")
+                append(apiListText).append("\n")
+            }
+
+            // 既存の表示（上位3件＋next/prev）は残す
             append(StationFormatter.formatTop3WithNextPrev(list, cur))
         }
     }
