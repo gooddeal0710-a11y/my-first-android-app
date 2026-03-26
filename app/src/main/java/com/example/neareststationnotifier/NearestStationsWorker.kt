@@ -37,7 +37,7 @@ class NearestStationsWorker(
 
         val showDebugOverlay = DebugPrefs.getShowDebug(context)
 
-        // ★追加：APIの戻り値（上位N件）をそのまま表示
+        // APIの戻り値（上位N件）をオーバーレイに表示（スマホだけで確認できる）
         val apiTopN = 12
         val apiListText = list.take(apiTopN).mapIndexed { i, s ->
             val dist = s.distanceRaw.ifBlank { "--" }
@@ -57,11 +57,11 @@ class NearestStationsWorker(
             }
 
             if (showDebugOverlay) {
+                append("api count=").append(list.size).append("\n")
                 append("api stations(top ").append(apiTopN).append("):\n")
                 append(apiListText).append("\n")
             }
 
-            // 既存の表示（上位3件＋next/prev）は残す
             append(StationFormatter.formatTop3WithNextPrev(list, cur))
         }
     }
