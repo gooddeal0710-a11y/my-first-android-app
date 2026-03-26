@@ -19,19 +19,12 @@ class NextStationPredictor(
 ) {
     data class State(
         val currentName: String? = null,
-
-        // 現在地に最も近い「現在駅レコード」の路線（候補）
         val primaryLine: String? = null,
-
-        // train中はこれを固定して使う（強い）
         val lockedLine: String? = null,
-
         val currentLines: Set<String> = emptySet(),
         val lastName: String? = null,
-
         val pendingSwitchName: String? = null,
         val pendingCount: Int = 0,
-
         val trainHoldUntilMs: Long = 0L
     )
 
@@ -154,20 +147,32 @@ class NextStationPredictor(
             }
         }
 
-        // --- train中の路線ロック ---
-        // train=true なら lockedLine を優先して維持。無ければ primaryLine でロック開始。
-        // train=false なら解除（徒歩＝乗換の可能性が高い）
+        // train中の路線ロック
         val locked = when {
             trainMode -> newState.lockedLine ?: newState.primaryLine
             else -> null
         }
         newState = newState.copy(lockedLine = locked)
 
-        val nextName = pickNextForward(
+        val effectiveLine = newState.lockedLine ?: newState.primaryLine
+
+        // ★train中は、現在駅レコードの next/prev を最優先で使う（名前の向きは信じず、bearingで選ぶ）
+        val nextByAdj = if (trainMode) {
+            pickNextByAdjacency(
+                curLatLon = curLatLon,
+                candidates = candidates,
+                currentName = newState.currentName,
+                currentLine = effectiveLine,
+                fwdBearing = fwdBearing,
+                lastName = newState.lastName
+            )
+        } else null
+
+        val nextName = nextByAdj ?: pickNextForward(
             curLatLon = curLatLon,
             candidates = candidates,
             currentName = newState.currentName,
-            currentLine = newState.lockedLine ?: newState.primaryLine,
+            currentLine = effectiveLine,
             currentLines = newState.currentLines,
             lastName = newState.lastName,
             fwdBearing = fwdBearing,
@@ -175,7 +180,7 @@ class NextStationPredictor(
         )
 
         val dbg = buildString {
-            append("dbg currentLine=").append(newState.lockedLine ?: newState.primaryLine ?: "--")
+            append("dbg currentLine=").append(effectiveLine ?: "--")
             append(" locked=").append(newState.lockedLine ?: "--")
             append(" primary=").append(newState.primaryLine ?: "--")
             append(" lines=").append(if (newState.currentLines.isEmpty()) "--" else newState.currentLines.joinToString("|"))
@@ -187,12 +192,64 @@ class NextStationPredictor(
             append(" cd=").append(if (currentDist.isFinite()) currentDist.toInt() else -1).append("m")
             append(" pend=").append(pend)
             append(" dec=").append(decision)
+            append(" adj=").append(nextByAdj ?: "--")
             if (fwdBearing != null) append(" br=").append("%.1f".format(fwdBearing))
             if (speedMps != null) append(" sp=").append("%.1f".format(speedMps))
             if (accuracyM != null) append(" acc=").append("%.0f".format(accuracyM))
         }
 
         return Result(newState.currentName, nextName, newState, dbg)
+    }
+
+    private fun pickNextByAdjacency(
+        curLatLon: Pair<Double, Double>,
+        candidates: List<StationCandidate>,
+        currentName: String?,
+        currentLine: String?,
+        fwdBearing: Double?,
+        lastName: String?
+    ): String? {
+        if (currentName.isNullOrBlank()) return null
+
+        val normLine = currentLine?.let { normalizeLine(it) }?.takeIf { it.isNotBlank() }
+
+        // 同名が複数あるので、路線一致を優先して「現在駅レコード」を選ぶ
+        val currentRecords = candidates.filter { it.name == currentName }
+        val currentRec = when {
+            currentRecords.isEmpty() -> null
+            normLine == null -> currentRecords.minByOrNull { distM(curLatLon, it) }
+            else -> currentRecords
+                .filter { normalizeLine(it.line) == normLine }
+                .minByOrNull { distM(curLatLon, it) }
+                ?: currentRecords.minByOrNull { distM(curLatLon, it) }
+        } ?: return null
+
+        val a = currentRec.next.takeIf { it.isNotBlank() }
+        val b = currentRec.prev.takeIf { it.isNotBlank() }
+
+        val options = listOfNotNull(a, b)
+            .distinct()
+            .filter { it != currentName && it != lastName }
+
+        if (options.isEmpty()) return null
+
+        // options が candidates に存在するものだけに絞る（存在しない駅名が返ることがある）
+        val optionCandidates = options.mapNotNull { name ->
+            candidates.filter { it.name == name }
+                .minByOrNull { distM(curLatLon, it) }
+        }
+        if (optionCandidates.isEmpty()) return null
+
+        // bearingがあるなら進行方向に近い方、無ければ距離が近い方
+        return if (fwdBearing != null) {
+            optionCandidates.maxByOrNull { c ->
+                val toBr = bearingFrom(curLatLon, Pair(c.lat ?: return@maxByOrNull -1e9, c.lon ?: return@maxByOrNull -1e9))
+                val diff = angleDiffDeg(fwdBearing, toBr)
+                cos(Math.toRadians(diff))
+            }?.name
+        } else {
+            optionCandidates.minByOrNull { distM(curLatLon, it) }?.name
+        }
     }
 
     private fun pickNextForward(
@@ -237,13 +294,14 @@ class NextStationPredictor(
 
             var score = wDir * dirScore + wDist * distScore
 
-            // フォールバック時の暴れ防止：路線違いを減点
-            if (normCurrent != null) {
-                val same = normalizeLine(c.line) == normCurrent
-                if (!same) score -= if (trainMode) otherLinePenaltyTrain else otherLinePenaltySlow
-            } else if (normLines.isNotEmpty()) {
-                val same = normalizeLine(c.line) in normLines
-                if (!same) score -= if (trainMode) otherLinePenaltyTrain else otherLinePenaltySlow
+            if (sameLinePool.isEmpty()) {
+                if (normCurrent != null) {
+                    val same = normalizeLine(c.line) == normCurrent
+                    if (!same) score -= if (trainMode) otherLinePenaltyTrain else otherLinePenaltySlow
+                } else if (normLines.isNotEmpty()) {
+                    val same = normalizeLine(c.line) in normLines
+                    if (!same) score -= if (trainMode) otherLinePenaltyTrain else otherLinePenaltySlow
+                }
             }
 
             if (trainMode && dirScore < 0.0) score -= backwardPenaltyTrain
