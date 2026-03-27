@@ -8,8 +8,8 @@ class StationApi(
     private val http: OkHttpClient = OkHttpClient()
 ) {
     fun getNearestStations(lat: Double, lon: Double): List<StationCandidate> {
-        // ★追加：radius=3000（単位はm）
-        val url = "https://express.heartrails.com/api/json?method=getStations&x=$lon&y=$lat&radius=3000"
+        // ★変更：radius=5000（単位m）
+        val url = "https://express.heartrails.com/api/json?method=getStations&x=$lon&y=$lat&radius=5000"
         val req = Request.Builder().url(url).get().build()
 
         http.newCall(req).execute().use { resp ->
