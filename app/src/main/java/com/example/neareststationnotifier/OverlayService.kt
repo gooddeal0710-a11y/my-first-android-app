@@ -40,6 +40,7 @@ class OverlayService : Service() {
     }
 
     private var updateCount = 0
+    private var apiCount = 0
     private val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.JAPAN)
 
     @Volatile private var lastStationsText: String = "--"
@@ -62,24 +63,49 @@ class OverlayService : Service() {
         OverlayUiController(this, wm)
     }
 
+    private fun buildCurrentNextOneLine(): String {
+        val lines = lastStationsText.lines().filter { it.isNotBlank() }
+
+        val currentLine = lines.getOrNull(0)?.trim().takeUnless { it.isNullOrBlank() } ?: "現在: --"
+        val nextLine = lines.getOrNull(1)?.trim().takeUnless { it.isNullOrBlank() } ?: "次: --"
+
+        return "$currentLine  $nextLine"
+    }
+
+    private fun buildRemainingDebugLines(): String {
+        val lines = lastStationsText.lines().filter { it.isNotBlank() }
+        if (lines.size <= 2) return ""
+        return lines.drop(2).joinToString("\n")
+    }
+
     private fun rebuildAndShow(loc: Location?) {
         val nowStr = timeFmt.format(Date())
         val showDebugOverlay = DebugPrefs.getShowDebug(this)
 
         lastDisplayText = if (!showDebugOverlay) {
-            // OFF: 常に2行固定（top3等は絶対に混ぜない）
-            val lines = lastStationsText.lines()
-            val cur = lines.getOrNull(0) ?: "現在: --"
-            val next = lines.getOrNull(1) ?: "次: --"
-            "$cur\n$next"
+            val currentNext = buildCurrentNextOneLine()
+            currentNext.replace("  ", "\n")
         } else {
-            // ON: 常にヘッダ付き
+            val headerLine = "cnt:$updateCount $nowStr $lastApiStatus apiCnt:$apiCount"
+            val currentNextLine = buildCurrentNextOneLine()
+            val remain = buildRemainingDebugLines()
+
             if (loc == null) {
-                "cnt:$updateCount $nowStr\nloc:null\n$lastApiStatus\nstations:\n$lastStationsText"
+                if (remain.isBlank()) {
+                    "$headerLine\nloc:null\n$currentNextLine"
+                } else {
+                    "$headerLine\nloc:null\n$currentNextLine\n$remain"
+                }
             } else {
                 val latStr = String.format(Locale.US, "%.5f", loc.latitude)
                 val lonStr = String.format(Locale.US, "%.5f", loc.longitude)
-                "cnt:$updateCount $nowStr\nlat:$latStr lon:$lonStr\n$lastApiStatus\nstations:\n$lastStationsText"
+                val locLine = "lat:$latStr lon:$lonStr"
+
+                if (remain.isBlank()) {
+                    "$headerLine\n$locLine\n$currentNextLine"
+                } else {
+                    "$headerLine\n$locLine\n$currentNextLine\n$remain"
+                }
             }
         }
 
@@ -93,7 +119,6 @@ class OverlayService : Service() {
             val loc = result.lastLocation
             updateCount += 1
 
-            // 表示は常に lastDisplayText に統一
             rebuildAndShow(loc)
 
             val locNonNull = loc ?: return
@@ -138,14 +163,16 @@ class OverlayService : Service() {
 
     private fun fetchNearestStationsAsync(loc: Location) {
         thread(start = true) {
+            apiCount += 1
             try {
                 lastApiStatus = "api:fetching"
+                rebuildAndShow(loc)
+
                 lastStationsText = stationsWorker.fetchStationsText(loc)
                 lastApiStatus = "api:ok"
             } catch (_: Exception) {
                 lastApiStatus = "api:err"
             }
-            // 駅取得後も同じルールで表示を再生成して出す
             rebuildAndShow(loc)
         }
     }
