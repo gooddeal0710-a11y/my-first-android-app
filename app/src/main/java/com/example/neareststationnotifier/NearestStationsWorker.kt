@@ -14,10 +14,11 @@ class NearestStationsWorker(
     fun fetchStationsText(loc: Location): String {
         val lat = loc.latitude
         val lon = loc.longitude
+
         val list = stationApi.getNearestStations(lat, lon)
 
-        // 密集地対策：少し多めに
-        val candidates = list.take(20)
+        // 推定に使う候補は多めに（表示とは別）
+        val candidates = list.take(50)
 
         val cur = Pair(lat, lon)
         val r = predictor.predict(
@@ -37,8 +38,9 @@ class NearestStationsWorker(
 
         val showDebugOverlay = DebugPrefs.getShowDebug(context)
 
-        // APIの戻り値（上位N件）をオーバーレイに表示（スマホだけで確認できる）
-        val apiTopN = 12
+        // ★渋谷などで表示が爆発しないよう、デバッグ表示は少し絞る
+        val apiTopN = 6
+
         val apiListText = list.take(apiTopN).mapIndexed { i, s ->
             val dist = s.distanceRaw.ifBlank { "--" }
             val line = s.line.ifBlank { "--" }
@@ -49,6 +51,11 @@ class NearestStationsWorker(
         }.joinToString("\n")
 
         return buildString {
+            // ★スクロール不可なので、最重要の api count を先頭に固定
+            if (showDebugOverlay) {
+                append("api count=").append(list.size).append("\n")
+            }
+
             append(currentLine).append("\n")
             append(nextLine).append("\n")
 
@@ -57,7 +64,6 @@ class NearestStationsWorker(
             }
 
             if (showDebugOverlay) {
-                append("api count=").append(list.size).append("\n")
                 append("api stations(top ").append(apiTopN).append("):\n")
                 append(apiListText).append("\n")
             }
