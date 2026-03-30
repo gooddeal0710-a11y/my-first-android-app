@@ -40,11 +40,11 @@ class OverlayService : Service() {
     }
 
     private var updateCount = 0
-    private var apiCount = 0
     private val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.JAPAN)
 
     @Volatile private var lastStationsText: String = "--"
     @Volatile private var lastApiStatus: String = "api:idle"
+    @Volatile private var lastApiCandidateCount: Int = 0
     @Volatile private var lastStationUpdatedAtMs: Long = 0L
     private val stationUpdateIntervalMs = 10_000L
 
@@ -83,10 +83,12 @@ class OverlayService : Service() {
         val showDebugOverlay = DebugPrefs.getShowDebug(this)
 
         lastDisplayText = if (!showDebugOverlay) {
-            val currentNext = buildCurrentNextOneLine()
-            currentNext.replace("  ", "\n")
+            val lines = lastStationsText.lines()
+            val cur = lines.getOrNull(0) ?: "現在: --"
+            val next = lines.getOrNull(1) ?: "次: --"
+            "$cur\n$next"
         } else {
-            val headerLine = "cnt:$updateCount $nowStr $lastApiStatus apiCnt:$apiCount"
+            val headerLine = "cnt:$updateCount $nowStr $lastApiStatus apiCnt:$lastApiCandidateCount"
             val currentNextLine = buildCurrentNextOneLine()
             val remain = buildRemainingDebugLines()
 
@@ -163,12 +165,13 @@ class OverlayService : Service() {
 
     private fun fetchNearestStationsAsync(loc: Location) {
         thread(start = true) {
-            apiCount += 1
             try {
                 lastApiStatus = "api:fetching"
                 rebuildAndShow(loc)
 
-                lastStationsText = stationsWorker.fetchStationsText(loc)
+                val result = stationsWorker.fetchStationsResult(loc)
+                lastStationsText = result.text
+                lastApiCandidateCount = result.apiCount
                 lastApiStatus = "api:ok"
             } catch (_: Exception) {
                 lastApiStatus = "api:err"
