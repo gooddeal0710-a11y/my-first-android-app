@@ -1,22 +1,26 @@
 package com.example.neareststationnotifier
 
-import kotlin.math.*
+import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.max
+import kotlin.math.sin
+import kotlin.math.sqrt
 
 class NextStationPredictor(
     private val enterRadiusM: Double = 120.0,
     private val exitRadiusM: Double = 180.0,
     private val switchMarginM: Double = 80.0,
-
     private val trainSpeedThreshMps: Double = 5.0,
     private val trainHoldMs: Long = 90_000L,
-
     private val wDir: Double = 0.60,
     private val wDist: Double = 0.40,
-
     private val otherLinePenaltySlow: Double = 0.25,
     private val otherLinePenaltyTrain: Double = 0.85,
     private val backwardPenaltyTrain: Double = 0.60
 ) {
+    private val lineLockResolver = LineLockResolver(confirmTimes = 3)
+
     data class State(
         val currentName: String? = null,
         val primaryLine: String? = null,
@@ -25,7 +29,9 @@ class NextStationPredictor(
         val lastName: String? = null,
         val pendingSwitchName: String? = null,
         val pendingCount: Int = 0,
-        val trainHoldUntilMs: Long = 0L
+        val trainHoldUntilMs: Long = 0L,
+        val lockedCandidateLine: String? = null,
+        val lockedCandidateCount: Int = 0
     )
 
     data class Result(
@@ -44,7 +50,9 @@ class NextStationPredictor(
         bearingDeg: Double? = null,
         accuracyM: Double? = null
     ): Result {
-        if (candidates.isEmpty()) return Result(state.currentName, null, state, "dbg: no candidates")
+        if (candidates.isEmpty()) {
+            return Result(state.currentName, null, state, "dbg: no candidates")
+        }
 
         val nowMs = System.currentTimeMillis()
         val speedTrain = (speedMps ?: 0.0) >= trainSpeedThreshMps
@@ -55,7 +63,8 @@ class NextStationPredictor(
         val nearestDist = distM(curLatLon, nearest)
 
         val currentDist = state.currentName?.let { curName ->
-            candidates.firstOrNull { it.name == curName }?.let { distM(curLatLon, it) }
+            candidates.filter { it.name == curName }
+                .minOfOrNull { distM(curLatLon, it) }
         } ?: Double.POSITIVE_INFINITY
 
         val fwdBearing = when {
@@ -81,6 +90,7 @@ class NextStationPredictor(
         var newState = state.copy(trainHoldUntilMs = holdUntil)
         var decision = "keep"
         var pend = 0
+        var lockedPend = 0
 
         if (state.currentName == null) {
             if (nearestDist <= enterRadiusM) {
@@ -147,16 +157,26 @@ class NextStationPredictor(
             }
         }
 
-        // train中の路線ロック
-        val locked = when {
-            trainMode -> newState.lockedLine ?: newState.primaryLine
-            else -> null
-        }
-        newState = newState.copy(lockedLine = locked)
+        val lockResult = lineLockResolver.resolve(
+            LineLockResolver.Input(
+                trainMode = trainMode,
+                primaryLine = newState.primaryLine,
+                lockedLine = newState.lockedLine,
+                lockedCandidateLine = newState.lockedCandidateLine,
+                lockedCandidateCount = newState.lockedCandidateCount
+            )
+        )
+
+        lockedPend = lockResult.lockedPend
+
+        newState = newState.copy(
+            lockedLine = lockResult.lockedLine,
+            lockedCandidateLine = lockResult.lockedCandidateLine,
+            lockedCandidateCount = lockResult.lockedCandidateCount
+        )
 
         val effectiveLine = newState.lockedLine ?: newState.primaryLine
 
-        // ★train中は、現在駅レコードの next/prev を最優先で使う（名前の向きは信じず、bearingで選ぶ）
         val nextByAdj = if (trainMode) {
             pickNextByAdjacency(
                 curLatLon = curLatLon,
@@ -191,6 +211,8 @@ class NextStationPredictor(
             append(" nd=").append(nearestDist.toInt()).append("m")
             append(" cd=").append(if (currentDist.isFinite()) currentDist.toInt() else -1).append("m")
             append(" pend=").append(pend)
+            append(" lpend=").append(lockedPend)
+            append(" lcan=").append(newState.lockedCandidateLine ?: "--")
             append(" dec=").append(decision)
             append(" adj=").append(nextByAdj ?: "--")
             if (fwdBearing != null) append(" br=").append("%.1f".format(fwdBearing))
@@ -213,7 +235,6 @@ class NextStationPredictor(
 
         val normLine = currentLine?.let { normalizeLine(it) }?.takeIf { it.isNotBlank() }
 
-        // 同名が複数あるので、路線一致を優先して「現在駅レコード」を選ぶ
         val currentRecords = candidates.filter { it.name == currentName }
         val currentRec = when {
             currentRecords.isEmpty() -> null
@@ -233,14 +254,12 @@ class NextStationPredictor(
 
         if (options.isEmpty()) return null
 
-        // options が candidates に存在するものだけに絞る（存在しない駅名が返ることがある）
         val optionCandidates = options.mapNotNull { name ->
             candidates.filter { it.name == name }
                 .minByOrNull { distM(curLatLon, it) }
         }
         if (optionCandidates.isEmpty()) return null
 
-        // bearingがあるなら進行方向に近い方、無ければ距離が近い方
         return if (fwdBearing != null) {
             optionCandidates.maxByOrNull { c ->
                 val toBr = bearingFrom(curLatLon, Pair(c.lat ?: return@maxByOrNull -1e9, c.lon ?: return@maxByOrNull -1e9))
