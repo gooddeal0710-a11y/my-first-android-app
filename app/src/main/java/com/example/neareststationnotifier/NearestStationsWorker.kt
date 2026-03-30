@@ -11,7 +11,7 @@ class NearestStationsWorker(
     private var predictorState = NextStationPredictor.State()
     private var prevFix: Pair<Double, Double>? = null
 
-    fun fetchStationsText(loc: Location): String {
+    fun fetchStationsResult(loc: Location): NearestStationsResult {
         val lat = loc.latitude
         val lon = loc.longitude
 
@@ -50,12 +50,7 @@ class NearestStationsWorker(
             "${i + 1}. ${s.name} / $line / $company / dist=$dist / next=$next prev=$prev"
         }.joinToString("\n")
 
-        return buildString {
-            // ★スクロール不可なので、最重要の api count を先頭に固定
-            if (showDebugOverlay) {
-                append("api count=").append(list.size).append("\n")
-            }
-
+        val text = buildString {
             append(currentLine).append("\n")
             append(nextLine).append("\n")
 
@@ -70,5 +65,10 @@ class NearestStationsWorker(
 
             append(StationFormatter.formatTop3WithNextPrev(list, cur))
         }
+
+        return NearestStationsResult(
+            apiCount = list.size,
+            text = text
+        )
     }
 }
