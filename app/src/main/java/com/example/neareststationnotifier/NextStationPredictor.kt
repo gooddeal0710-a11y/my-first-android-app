@@ -1,11 +1,6 @@
 package com.example.neareststationnotifier
 
-import kotlin.math.abs
-import kotlin.math.atan2
-import kotlin.math.cos
 import kotlin.math.max
-import kotlin.math.sin
-import kotlin.math.sqrt
 
 class NextStationPredictor(
     private val enterRadiusM: Double = 120.0,
@@ -59,32 +54,32 @@ class NextStationPredictor(
         val holdUntil = if (speedTrain) nowMs + trainHoldMs else state.trainHoldUntilMs
         val trainMode = speedTrain || (nowMs < holdUntil)
 
-        val nearest = candidates.minByOrNull { distM(curLatLon, it) }!!
-        val nearestDist = distM(curLatLon, nearest)
+        val nearest = candidates.minByOrNull { GeoLineUtils.distM(curLatLon, it) }!!
+        val nearestDist = GeoLineUtils.distM(curLatLon, nearest)
 
         val currentDist = state.currentName?.let { curName ->
             candidates.filter { it.name == curName }
-                .minOfOrNull { distM(curLatLon, it) }
+                .minOfOrNull { GeoLineUtils.distM(curLatLon, it) }
         } ?: Double.POSITIVE_INFINITY
 
         val fwdBearing = when {
             bearingDeg != null && !bearingDeg.isNaN() -> bearingDeg
-            prevLatLon != null -> bearingFrom(prevLatLon, curLatLon)
+            prevLatLon != null -> GeoLineUtils.bearingFrom(prevLatLon, curLatLon)
             else -> null
         }
 
         fun linesForStationName(name: String): Set<String> =
             candidates.asSequence()
                 .filter { it.name == name }
-                .map { normalizeLine(it.line) }
+                .map { GeoLineUtils.normalizeLine(it.line) }
                 .filter { it.isNotBlank() }
                 .toSet()
 
         fun primaryLineForStationName(name: String): String? {
             val best = candidates
                 .filter { it.name == name }
-                .minByOrNull { distM(curLatLon, it) }
-            return best?.line?.let { normalizeLine(it) }?.takeIf { it.isNotBlank() }
+                .minByOrNull { GeoLineUtils.distM(curLatLon, it) }
+            return best?.line?.let { GeoLineUtils.normalizeLine(it) }?.takeIf { it.isNotBlank() }
         }
 
         var newState = state.copy(trainHoldUntilMs = holdUntil)
@@ -178,7 +173,7 @@ class NextStationPredictor(
         val effectiveLine = newState.lockedLine ?: newState.primaryLine
 
         val nextByAdj = if (trainMode) {
-            pickNextByAdjacency(
+            NextStationSelection.pickNextByAdjacency(
                 curLatLon = curLatLon,
                 candidates = candidates,
                 currentName = newState.currentName,
@@ -188,7 +183,7 @@ class NextStationPredictor(
             )
         } else null
 
-        val nextName = nextByAdj ?: pickNextForward(
+        val nextName = nextByAdj ?: NextStationSelection.pickNextForward(
             curLatLon = curLatLon,
             candidates = candidates,
             currentName = newState.currentName,
@@ -196,7 +191,12 @@ class NextStationPredictor(
             currentLines = newState.currentLines,
             lastName = newState.lastName,
             fwdBearing = fwdBearing,
-            trainMode = trainMode
+            trainMode = trainMode,
+            wDir = wDir,
+            wDist = wDist,
+            otherLinePenaltySlow = otherLinePenaltySlow,
+            otherLinePenaltyTrain = otherLinePenaltyTrain,
+            backwardPenaltyTrain = backwardPenaltyTrain
         )
 
         val dbg = buildString {
@@ -222,145 +222,4 @@ class NextStationPredictor(
 
         return Result(newState.currentName, nextName, newState, dbg)
     }
-
-    private fun pickNextByAdjacency(
-        curLatLon: Pair<Double, Double>,
-        candidates: List<StationCandidate>,
-        currentName: String?,
-        currentLine: String?,
-        fwdBearing: Double?,
-        lastName: String?
-    ): String? {
-        if (currentName.isNullOrBlank()) return null
-
-        val normLine = currentLine?.let { normalizeLine(it) }?.takeIf { it.isNotBlank() }
-
-        val currentRecords = candidates.filter { it.name == currentName }
-        val currentRec = when {
-            currentRecords.isEmpty() -> null
-            normLine == null -> currentRecords.minByOrNull { distM(curLatLon, it) }
-            else -> currentRecords
-                .filter { normalizeLine(it.line) == normLine }
-                .minByOrNull { distM(curLatLon, it) }
-                ?: currentRecords.minByOrNull { distM(curLatLon, it) }
-        } ?: return null
-
-        val a = currentRec.next.takeIf { it.isNotBlank() }
-        val b = currentRec.prev.takeIf { it.isNotBlank() }
-
-        val options = listOfNotNull(a, b)
-            .distinct()
-            .filter { it != currentName && it != lastName }
-
-        if (options.isEmpty()) return null
-
-        val optionCandidates = options.mapNotNull { name ->
-            candidates.filter { it.name == name }
-                .minByOrNull { distM(curLatLon, it) }
-        }
-        if (optionCandidates.isEmpty()) return null
-
-        return if (fwdBearing != null) {
-            optionCandidates.maxByOrNull { c ->
-                val toBr = bearingFrom(curLatLon, Pair(c.lat ?: return@maxByOrNull -1e9, c.lon ?: return@maxByOrNull -1e9))
-                val diff = angleDiffDeg(fwdBearing, toBr)
-                cos(Math.toRadians(diff))
-            }?.name
-        } else {
-            optionCandidates.minByOrNull { distM(curLatLon, it) }?.name
-        }
-    }
-
-    private fun pickNextForward(
-        curLatLon: Pair<Double, Double>,
-        candidates: List<StationCandidate>,
-        currentName: String?,
-        currentLine: String?,
-        currentLines: Set<String>,
-        lastName: String?,
-        fwdBearing: Double?,
-        trainMode: Boolean
-    ): String? {
-        val basePool = candidates.filter { it.name != currentName && it.name != lastName }
-        if (basePool.isEmpty()) return null
-
-        val normCurrent = currentLine?.let { normalizeLine(it) }?.takeIf { it.isNotBlank() }
-        val normLines = currentLines.map { normalizeLine(it) }.filter { it.isNotBlank() }.toSet()
-
-        val sameLinePool = if (normCurrent != null) {
-            basePool.filter { normalizeLine(it.line) == normCurrent }
-        } else if (normLines.isNotEmpty()) {
-            basePool.filter { normalizeLine(it.line) in normLines }
-        } else emptyList()
-
-        val pool = if (sameLinePool.isNotEmpty()) sameLinePool else basePool
-
-        val dists = pool.map { distM(curLatLon, it) }.filter { it.isFinite() }
-        val maxDist = dists.maxOrNull() ?: 1.0
-
-        var best: StationCandidate? = null
-        var bestScore = Double.NEGATIVE_INFINITY
-
-        for (c in pool) {
-            val d = distM(curLatLon, c)
-            val distScore = if (d.isFinite()) 1.0 - (d / maxDist).coerceIn(0.0, 1.0) else 0.0
-
-            val dirScore = if (fwdBearing != null && c.lat != null && c.lon != null) {
-                val toBr = bearingFrom(curLatLon, Pair(c.lat, c.lon))
-                val diff = angleDiffDeg(fwdBearing, toBr)
-                cos(Math.toRadians(diff))
-            } else 0.0
-
-            var score = wDir * dirScore + wDist * distScore
-
-            if (sameLinePool.isEmpty()) {
-                if (normCurrent != null) {
-                    val same = normalizeLine(c.line) == normCurrent
-                    if (!same) score -= if (trainMode) otherLinePenaltyTrain else otherLinePenaltySlow
-                } else if (normLines.isNotEmpty()) {
-                    val same = normalizeLine(c.line) in normLines
-                    if (!same) score -= if (trainMode) otherLinePenaltyTrain else otherLinePenaltySlow
-                }
-            }
-
-            if (trainMode && dirScore < 0.0) score -= backwardPenaltyTrain
-
-            if (score > bestScore) {
-                bestScore = score
-                best = c
-            }
-        }
-        return best?.name
-    }
-
-    private fun distM(cur: Pair<Double, Double>, c: StationCandidate): Double {
-        val lat = c.lat ?: return Double.POSITIVE_INFINITY
-        val lon = c.lon ?: return Double.POSITIVE_INFINITY
-        val dLat = (lat - cur.first) * 111_320.0
-        val dLon = (lon - cur.second) * 111_320.0 * cos(Math.toRadians(cur.first))
-        return sqrt(dLat * dLat + dLon * dLon)
-    }
-
-    private fun bearingFrom(a: Pair<Double, Double>, b: Pair<Double, Double>): Double {
-        val lat1 = Math.toRadians(a.first)
-        val lat2 = Math.toRadians(b.first)
-        val dLon = Math.toRadians(b.second - a.second)
-        val y = sin(dLon) * cos(lat2)
-        val x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon)
-        var br = Math.toDegrees(atan2(y, x))
-        if (br < 0) br += 360.0
-        return br
-    }
-
-    private fun angleDiffDeg(a: Double, b: Double): Double {
-        val d = (a - b + 540.0) % 360.0 - 180.0
-        return abs(d)
-    }
-
-    private fun normalizeLine(s: String): String =
-        s.lowercase()
-            .replace("ＪＲ", "jr")
-            .replace("（", "(").replace("）", ")")
-            .replace(" ", "")
-            .trim()
 }
