@@ -60,7 +60,15 @@ class OverlayService : Service() {
 
     private val ui by lazy {
         val wm = getSystemService(WINDOW_SERVICE) as android.view.WindowManager
-        OverlayUiController(this, wm)
+        OverlayUiController(
+            context = this,
+            windowManager = wm,
+            onToggleDebug = {
+                val newValue = !DebugPrefs.getShowDebug(this)
+                DebugPrefs.setShowDebug(this, newValue)
+                rebuildAndShow(null)
+            }
+        )
     }
 
     private fun buildCurrentNextOneLine(): String {
