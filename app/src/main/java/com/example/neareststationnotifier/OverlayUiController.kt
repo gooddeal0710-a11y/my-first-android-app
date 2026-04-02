@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.PixelFormat
 import android.text.TextUtils
 import android.util.TypedValue
+import android.view.GestureDetector
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.MotionEvent
@@ -19,6 +20,7 @@ import kotlin.math.min
 class OverlayUiController(
     private val context: Context,
     private val windowManager: WindowManager,
+    private val onToggleDebug: (() -> Unit)? = null,
 ) {
     private val overlayPrefs = OverlayPrefs(context)
 
@@ -114,7 +116,6 @@ class OverlayUiController(
             }
         }
 
-        // ★重要：タッチは「WindowManagerにaddViewしたルート(dotView)」に付ける
         dv.setOnTouchListener(TapDragToggleTouchListener())
     }
 
@@ -193,9 +194,26 @@ class OverlayUiController(
 
         private val tmpLoc = IntArray(2)
 
+        private val gestureDetector = GestureDetector(
+            context,
+            object : GestureDetector.SimpleOnGestureListener() {
+
+                override fun onDown(e: MotionEvent): Boolean = true
+
+                override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                    togglePanel()
+                    return true
+                }
+
+                override fun onDoubleTap(e: MotionEvent): Boolean {
+                    onToggleDebug?.invoke()
+                    return true
+                }
+            }
+        )
+
         override fun onTouch(touchedView: View, event: MotionEvent): Boolean {
             val root = dotView ?: return false
-            // 念のため：WindowManagerに付いてないなら何もしない
             if (root.parent == null) return false
 
             when (event.actionMasked) {
@@ -210,6 +228,8 @@ class OverlayUiController(
 
                     downParamX = dotParams.x
                     downParamY = dotParams.y
+
+                    gestureDetector.onTouchEvent(event)
                     return true
                 }
 
@@ -229,6 +249,8 @@ class OverlayUiController(
                         dotParams.y = (downParamY + (newViewScreenY - downViewScreenY)).toInt()
 
                         windowManager.updateViewLayout(root, dotParams)
+                    } else {
+                        gestureDetector.onTouchEvent(event)
                     }
                     return true
                 }
@@ -239,7 +261,8 @@ class OverlayUiController(
                         saveDotPositionAsRatio()
                         return true
                     }
-                    togglePanel()
+
+                    gestureDetector.onTouchEvent(event)
                     return true
                 }
             }
