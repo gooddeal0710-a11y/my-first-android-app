@@ -39,4 +39,13 @@ object GeoLineUtils {
             .replace("）", ")")
             .replace(" ", "")
             .trim()
+
+    fun normalizeStationName(s: String): String =
+        s.trim()
+            .replace("ヶ", "ケ")
+            .replace("が", "ケ")
+            .replace("ヵ", "ケ")
+            .replace("之", "の")
+            .replace("ノ", "の")
+            .replace(" ", "")
 }
