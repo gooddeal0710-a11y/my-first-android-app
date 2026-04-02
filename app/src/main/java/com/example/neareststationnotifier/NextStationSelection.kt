@@ -14,32 +14,52 @@ object NextStationSelection {
     ): String? {
         if (currentName.isNullOrBlank()) return null
 
+        val normCurrentName = GeoLineUtils.normalizeStationName(currentName)
+        val normLastName = lastName?.let { GeoLineUtils.normalizeStationName(it) }
+
         val normLine = currentLine
             ?.let { GeoLineUtils.normalizeLine(it) }
             ?.takeIf { it.isNotBlank() }
 
-        val currentRecords = candidates.filter { it.name == currentName }
-        val currentRec = when {
-            currentRecords.isEmpty() -> null
-            normLine == null -> currentRecords.minByOrNull { GeoLineUtils.distM(curLatLon, it) }
-            else -> currentRecords
-                .filter { GeoLineUtils.normalizeLine(it.line) == normLine }
-                .minByOrNull { GeoLineUtils.distM(curLatLon, it) }
-                ?: currentRecords.minByOrNull { GeoLineUtils.distM(curLatLon, it) }
-        } ?: return null
+        val currentRecords = candidates.filter {
+            GeoLineUtils.normalizeStationName(it.name) == normCurrentName
+        }
 
-        val options = listOfNotNull(
-            currentRec.next.takeIf { it.isNotBlank() },
-            currentRec.prev.takeIf { it.isNotBlank() }
-        )
+        val sameLineCurrentRecords = if (normLine != null) {
+            currentRecords.filter { GeoLineUtils.normalizeLine(it.line) == normLine }
+        } else {
+            currentRecords
+        }
+
+        val sourceRecords = when {
+            sameLineCurrentRecords.isNotEmpty() -> sameLineCurrentRecords
+            currentRecords.isNotEmpty() -> currentRecords
+            else -> return null
+        }
+
+        val options = sourceRecords
+            .flatMap { rec ->
+                listOfNotNull(
+                    rec.next.takeIf { it.isNotBlank() },
+                    rec.prev.takeIf { it.isNotBlank() }
+                )
+            }
             .distinct()
-            .filter { it != currentName && it != lastName }
+            .filter { name ->
+                val norm = GeoLineUtils.normalizeStationName(name)
+                norm != normCurrentName && norm != normLastName
+            }
 
         if (options.isEmpty()) return null
 
         val optionCandidates = options.mapNotNull { name ->
+            val normOptionName = GeoLineUtils.normalizeStationName(name)
+
             val sameLine = if (normLine != null) {
-                candidates.filter { it.name == name && GeoLineUtils.normalizeLine(it.line) == normLine }
+                candidates.filter {
+                    GeoLineUtils.normalizeStationName(it.name) == normOptionName &&
+                        GeoLineUtils.normalizeLine(it.line) == normLine
+                }
             } else {
                 emptyList()
             }
@@ -48,7 +68,7 @@ object NextStationSelection {
                 sameLine.isNotEmpty() -> sameLine.minByOrNull { GeoLineUtils.distM(curLatLon, it) }
                 normLine != null -> null
                 else -> candidates
-                    .filter { it.name == name }
+                    .filter { GeoLineUtils.normalizeStationName(it.name) == normOptionName }
                     .minByOrNull { GeoLineUtils.distM(curLatLon, it) }
             }
         }
@@ -83,7 +103,13 @@ object NextStationSelection {
         otherLinePenaltyTrain: Double,
         backwardPenaltyTrain: Double
     ): String? {
-        val basePool = candidates.filter { it.name != currentName && it.name != lastName }
+        val normCurrentName = currentName?.let { GeoLineUtils.normalizeStationName(it) }
+        val normLastName = lastName?.let { GeoLineUtils.normalizeStationName(it) }
+
+        val basePool = candidates.filter {
+            val norm = GeoLineUtils.normalizeStationName(it.name)
+            norm != normCurrentName && norm != normLastName
+        }
         if (basePool.isEmpty()) return null
 
         val normCurrent = currentLine
