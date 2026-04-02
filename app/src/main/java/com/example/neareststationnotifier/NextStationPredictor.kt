@@ -68,18 +68,65 @@ class NextStationPredictor(
             else -> null
         }
 
+        fun stationRecords(name: String): List<StationCandidate> =
+            candidates.filter {
+                GeoLineUtils.normalizeStationName(it.name) == GeoLineUtils.normalizeStationName(name)
+            }
+
         fun linesForStationName(name: String): Set<String> =
-            candidates.asSequence()
-                .filter { it.name == name }
+            stationRecords(name).asSequence()
                 .map { GeoLineUtils.normalizeLine(it.line) }
                 .filter { it.isNotBlank() }
                 .toSet()
 
-        fun primaryLineForStationName(name: String): String? {
-            val best = candidates
-                .filter { it.name == name }
+        fun choosePrimaryLineForStationName(
+            name: String,
+            preferredLockedLine: String?,
+            preferredPrimaryLine: String?,
+            preferredLines: Set<String>
+        ): String? {
+            val records = stationRecords(name)
+            if (records.isEmpty()) return null
+
+            val normalizedLocked = preferredLockedLine
+                ?.let { GeoLineUtils.normalizeLine(it) }
+                ?.takeIf { it.isNotBlank() }
+
+            val normalizedPrimary = preferredPrimaryLine
+                ?.let { GeoLineUtils.normalizeLine(it) }
+                ?.takeIf { it.isNotBlank() }
+
+            val normalizedPreferredLines = preferredLines
+                .map { GeoLineUtils.normalizeLine(it) }
+                .filter { it.isNotBlank() }
+                .toSet()
+
+            if (normalizedLocked != null) {
+                val hit = records.firstOrNull {
+                    GeoLineUtils.normalizeLine(it.line) == normalizedLocked
+                }
+                if (hit != null) return normalizedLocked
+            }
+
+            if (normalizedPrimary != null) {
+                val hit = records.firstOrNull {
+                    GeoLineUtils.normalizeLine(it.line) == normalizedPrimary
+                }
+                if (hit != null) return normalizedPrimary
+            }
+
+            if (normalizedPreferredLines.isNotEmpty()) {
+                val hit = records.firstOrNull {
+                    GeoLineUtils.normalizeLine(it.line) in normalizedPreferredLines
+                }
+                if (hit != null) return GeoLineUtils.normalizeLine(hit.line)
+            }
+
+            return records
                 .minByOrNull { GeoLineUtils.distM(curLatLon, it) }
-            return best?.line?.let { GeoLineUtils.normalizeLine(it) }?.takeIf { it.isNotBlank() }
+                ?.line
+                ?.let { GeoLineUtils.normalizeLine(it) }
+                ?.takeIf { it.isNotBlank() }
         }
 
         var newState = state.copy(trainHoldUntilMs = holdUntil)
@@ -90,7 +137,12 @@ class NextStationPredictor(
         if (state.currentName == null) {
             if (nearestDist <= enterRadiusM) {
                 val nm = nearest.name
-                val pl = primaryLineForStationName(nm)
+                val pl = choosePrimaryLineForStationName(
+                    name = nm,
+                    preferredLockedLine = state.lockedLine,
+                    preferredPrimaryLine = state.primaryLine,
+                    preferredLines = state.currentLines
+                )
                 newState = newState.copy(
                     currentName = nm,
                     primaryLine = pl,
@@ -125,7 +177,12 @@ class NextStationPredictor(
                     if (nextCount >= confirmTimes) {
                         val old = state.currentName
                         val nm = nearest.name
-                        val pl = primaryLineForStationName(nm)
+                        val pl = choosePrimaryLineForStationName(
+                            name = nm,
+                            preferredLockedLine = state.lockedLine,
+                            preferredPrimaryLine = state.primaryLine,
+                            preferredLines = state.currentLines
+                        )
                         newState = newState.copy(
                             currentName = nm,
                             primaryLine = pl,
