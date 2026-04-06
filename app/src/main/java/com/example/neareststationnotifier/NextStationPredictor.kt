@@ -8,6 +8,7 @@ class NextStationPredictor(
     private val switchMarginM: Double = 80.0,
     private val trainSpeedThreshMps: Double = 5.0,
     private val trainHoldMs: Long = 90_000L,
+    private val inferredTrainMoveM: Double = 120.0,
     private val wDir: Double = 0.60,
     private val wDist: Double = 0.40,
     private val otherLinePenaltySlow: Double = 0.25,
@@ -50,9 +51,15 @@ class NextStationPredictor(
         }
 
         val nowMs = System.currentTimeMillis()
+
+        val movedDistM = prevLatLon?.let { GeoLineUtils.distanceM(it, curLatLon) } ?: 0.0
         val speedTrain = (speedMps ?: 0.0) >= trainSpeedThreshMps
-        val holdUntil = if (speedTrain) nowMs + trainHoldMs else state.trainHoldUntilMs
-        val trainMode = speedTrain || (nowMs < holdUntil)
+
+        // speed が取れないときだけ、前回位置からの移動距離で補完
+        val inferredTrain = (speedMps == null) && (movedDistM >= inferredTrainMoveM)
+
+        val holdUntil = if (speedTrain || inferredTrain) nowMs + trainHoldMs else state.trainHoldUntilMs
+        val trainMode = speedTrain || inferredTrain || (nowMs < holdUntil)
 
         val nearest = candidates.minByOrNull { GeoLineUtils.distM(curLatLon, it) }!!
         val nearestDist = GeoLineUtils.distM(curLatLon, nearest)
@@ -267,6 +274,7 @@ class NextStationPredictor(
             append(" nearest=").append(nearest.name).append("@").append(nearest.line)
             append(" nd=").append(nearestDist.toInt()).append("m")
             append(" cd=").append(if (currentDist.isFinite()) currentDist.toInt() else -1).append("m")
+            append(" moved=").append(movedDistM.toInt()).append("m")
             append(" pend=").append(pend)
             append(" lpend=").append(lockedPend)
             append(" lcan=").append(newState.lockedCandidateLine ?: "--")
@@ -274,6 +282,7 @@ class NextStationPredictor(
             append(" adj=").append(nextByAdj ?: "--")
             if (fwdBearing != null) append(" br=").append("%.1f".format(fwdBearing))
             if (speedMps != null) append(" sp=").append("%.1f".format(speedMps))
+            append(" inf=").append(inferredTrain)
             if (accuracyM != null) append(" acc=").append("%.0f".format(accuracyM))
         }
 
