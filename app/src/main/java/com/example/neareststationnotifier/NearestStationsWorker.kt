@@ -34,7 +34,11 @@ class NearestStationsWorker(
         prevFix = cur
 
         val currentLine = r.currentName?.let { "現在: $it" } ?: "現在: --"
-        val nextLine = r.nextName?.let { "次: $it" } ?: "次: --"
+        val nextLine = if (r.currentName != null && r.nextName != null) {
+            "次: ${r.nextName}"
+        } else {
+            "次: --"
+        }
 
         val showDebugOverlay = DebugPrefs.getShowDebug(context)
 
