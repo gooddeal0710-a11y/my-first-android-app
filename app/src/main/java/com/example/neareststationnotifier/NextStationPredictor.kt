@@ -1,6 +1,10 @@
 package com.example.neareststationnotifier
 
+import kotlin.math.atan2
+import kotlin.math.cos
 import kotlin.math.max
+import kotlin.math.sin
+import kotlin.math.sqrt
 
 class NextStationPredictor(
     private val enterRadiusM: Double = 120.0,
@@ -37,6 +41,23 @@ class NextStationPredictor(
         val debugText: String = ""
     )
 
+    private fun coordDistM(a: Pair<Double, Double>, b: Pair<Double, Double>): Double {
+        val r = 6371000.0
+        val lat1 = Math.toRadians(a.first)
+        val lon1 = Math.toRadians(a.second)
+        val lat2 = Math.toRadians(b.first)
+        val lon2 = Math.toRadians(b.second)
+
+        val dLat = lat2 - lat1
+        val dLon = lon2 - lon1
+
+        val h = sin(dLat / 2) * sin(dLat / 2) +
+            cos(lat1) * cos(lat2) * sin(dLon / 2) * sin(dLon / 2)
+
+        val c = 2 * atan2(sqrt(h), sqrt(1 - h))
+        return r * c
+    }
+
     fun predict(
         prevLatLon: Pair<Double, Double>?,
         curLatLon: Pair<Double, Double>,
@@ -52,7 +73,7 @@ class NextStationPredictor(
 
         val nowMs = System.currentTimeMillis()
 
-        val movedDistM = prevLatLon?.let { GeoLineUtils.distM(it, curLatLon) } ?: 0.0
+        val movedDistM = prevLatLon?.let { coordDistM(it, curLatLon) } ?: 0.0
         val speedTrain = (speedMps ?: 0.0) >= trainSpeedThreshMps
 
         // speed が取れないときだけ、前回位置からの移動距離で train を補完
