@@ -52,10 +52,10 @@ class NextStationPredictor(
 
         val nowMs = System.currentTimeMillis()
 
-        val movedDistM = prevLatLon?.let { GeoLineUtils.distanceM(it, curLatLon) } ?: 0.0
+        val movedDistM = prevLatLon?.let { GeoLineUtils.distM(it, curLatLon) } ?: 0.0
         val speedTrain = (speedMps ?: 0.0) >= trainSpeedThreshMps
 
-        // speed が取れないときだけ、前回位置からの移動距離で補完
+        // speed が取れないときだけ、前回位置からの移動距離で train を補完
         val inferredTrain = (speedMps == null) && (movedDistM >= inferredTrainMoveM)
 
         val holdUntil = if (speedTrain || inferredTrain) nowMs + trainHoldMs else state.trainHoldUntilMs
