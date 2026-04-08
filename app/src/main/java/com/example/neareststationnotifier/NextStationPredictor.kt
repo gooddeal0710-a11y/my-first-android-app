@@ -107,6 +107,11 @@ class NextStationPredictor(
                 .filter { it.isNotBlank() }
                 .toSet()
 
+        fun stationHasLine(name: String, line: String?): Boolean {
+            val nl = line?.let { GeoLineUtils.normalizeLine(it) }?.takeIf { it.isNotBlank() } ?: return false
+            return stationRecords(name).any { GeoLineUtils.normalizeLine(it.line) == nl }
+        }
+
         fun choosePrimaryLineForStationName(
             name: String,
             preferredLockedLine: String?,
@@ -195,7 +200,20 @@ class NextStationPredictor(
                 )
                 decision = "keep_hysteresis"
             } else {
-                val needSwitch = (nearest.name != state.currentName) && (nearestDist + switchMarginM < currentDist)
+                val effectiveLineBeforeSwitch = state.lockedLine ?: state.primaryLine
+
+                val switchLineOk = if (trainMode) {
+                    stationHasLine(nearest.name, effectiveLineBeforeSwitch) ||
+                        linesForStationName(nearest.name).intersect(state.currentLines).isNotEmpty()
+                } else {
+                    true
+                }
+
+                val needSwitch =
+                    switchLineOk &&
+                        (nearest.name != state.currentName) &&
+                        (nearestDist + switchMarginM < currentDist)
+
                 if (needSwitch) {
                     val same = (state.pendingSwitchName == nearest.name)
                     val nextCount = if (same) state.pendingCount + 1 else 1
@@ -232,7 +250,7 @@ class NextStationPredictor(
                         pendingSwitchName = null,
                         pendingCount = 0
                     )
-                    decision = "keep_reset"
+                    decision = if (!switchLineOk && trainMode) "keep_line_guard" else "keep_reset"
                 }
             }
         }
