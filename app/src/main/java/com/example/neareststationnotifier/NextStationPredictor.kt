@@ -166,6 +166,8 @@ class NextStationPredictor(
         var decision = "keep"
         var pend = 0
         var lockedPend = 0
+        var lineMatched = false
+        var forceReline = false
 
         if (state.currentName == null) {
             if (nearestDist <= enterRadiusM) {
@@ -202,9 +204,19 @@ class NextStationPredictor(
             } else {
                 val effectiveLineBeforeSwitch = state.lockedLine ?: state.primaryLine
 
-                val switchLineOk = if (trainMode) {
+                lineMatched =
                     stationHasLine(nearest.name, effectiveLineBeforeSwitch) ||
                         linesForStationName(nearest.name).intersect(state.currentLines).isNotEmpty()
+
+                forceReline =
+                    trainMode && (
+                        !currentDist.isFinite() ||
+                            nearestDist <= 100.0 ||
+                            (currentDist >= 350.0 && nearestDist <= 280.0)
+                        )
+
+                val switchLineOk = if (trainMode) {
+                    lineMatched || forceReline
                 } else {
                     true
                 }
@@ -237,7 +249,7 @@ class NextStationPredictor(
                             pendingSwitchName = null,
                             pendingCount = 0
                         )
-                        decision = "switch_confirmed"
+                        decision = if (lineMatched) "switch_confirmed" else "switch_reline"
                     } else {
                         newState = newState.copy(
                             pendingSwitchName = nearest.name,
@@ -250,7 +262,11 @@ class NextStationPredictor(
                         pendingSwitchName = null,
                         pendingCount = 0
                     )
-                    decision = if (!switchLineOk && trainMode) "keep_line_guard" else "keep_reset"
+                    decision = when {
+                        trainMode && !lineMatched && forceReline -> "keep_reline_wait"
+                        trainMode && !lineMatched -> "keep_line_guard"
+                        else -> "keep_reset"
+                    }
                 }
             }
         }
@@ -317,6 +333,8 @@ class NextStationPredictor(
             append(" pend=").append(pend)
             append(" lpend=").append(lockedPend)
             append(" lcan=").append(newState.lockedCandidateLine ?: "--")
+            append(" lmatch=").append(lineMatched)
+            append(" freline=").append(forceReline)
             append(" dec=").append(decision)
             append(" adj=").append(nextByAdj ?: "--")
             if (fwdBearing != null) append(" br=").append("%.1f".format(fwdBearing))
