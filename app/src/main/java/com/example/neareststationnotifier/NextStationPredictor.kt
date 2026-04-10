@@ -75,8 +75,6 @@ class NextStationPredictor(
 
         val movedDistM = prevLatLon?.let { coordDistM(it, curLatLon) } ?: 0.0
         val speedTrain = (speedMps ?: 0.0) >= trainSpeedThreshMps
-
-        // speed が取れないときだけ、前回位置からの移動距離で train を補完
         val inferredTrain = (speedMps == null) && (movedDistM >= inferredTrainMoveM)
 
         val holdUntil = if (speedTrain || inferredTrain) nowMs + trainHoldMs else state.trainHoldUntilMs
@@ -211,8 +209,7 @@ class NextStationPredictor(
                 forceReline =
                     trainMode && (
                         !currentDist.isFinite() ||
-                            nearestDist <= 100.0 ||
-                            (currentDist >= 350.0 && nearestDist <= 280.0)
+                            (currentDist >= 350.0 && nearestDist <= 180.0)
                         )
 
                 val switchLineOk = if (trainMode) {
