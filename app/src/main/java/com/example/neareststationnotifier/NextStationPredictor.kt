@@ -13,6 +13,7 @@ class NextStationPredictor(
     private val trainSpeedThreshMps: Double = 5.0,
     private val trainHoldMs: Long = 90_000L,
     private val inferredTrainMoveM: Double = 120.0,
+    private val lineLockWarmupMs: Long = 20_000L,
     private val wDir: Double = 0.60,
     private val wDist: Double = 0.40,
     private val otherLinePenaltySlow: Double = 0.25,
@@ -30,6 +31,7 @@ class NextStationPredictor(
         val pendingSwitchName: String? = null,
         val pendingCount: Int = 0,
         val trainHoldUntilMs: Long = 0L,
+        val trainStartedAtMs: Long = 0L,
         val lockedCandidateLine: String? = null,
         val lockedCandidateCount: Int = 0
     )
@@ -73,12 +75,21 @@ class NextStationPredictor(
 
         val nowMs = System.currentTimeMillis()
 
+        val wasTrainMode = nowMs < state.trainHoldUntilMs
+
         val movedDistM = prevLatLon?.let { coordDistM(it, curLatLon) } ?: 0.0
         val speedTrain = (speedMps ?: 0.0) >= trainSpeedThreshMps
         val inferredTrain = (speedMps == null) && (movedDistM >= inferredTrainMoveM)
 
         val holdUntil = if (speedTrain || inferredTrain) nowMs + trainHoldMs else state.trainHoldUntilMs
         val trainMode = speedTrain || inferredTrain || (nowMs < holdUntil)
+
+        val trainStartedAtMs = when {
+            !wasTrainMode && trainMode -> nowMs
+            trainMode && state.trainStartedAtMs > 0L -> state.trainStartedAtMs
+            trainMode -> nowMs
+            else -> 0L
+        }
 
         val nearest = candidates.minByOrNull { GeoLineUtils.distM(curLatLon, it) }!!
         val nearestDist = GeoLineUtils.distM(curLatLon, nearest)
@@ -196,7 +207,10 @@ class NextStationPredictor(
             }
         }
 
-        var newState = state.copy(trainHoldUntilMs = holdUntil)
+        var newState = state.copy(
+            trainHoldUntilMs = holdUntil,
+            trainStartedAtMs = trainStartedAtMs
+        )
         var decision = "keep"
         var pend = 0
         var lockedPend = 0
@@ -327,23 +341,43 @@ class NextStationPredictor(
             }
         }
 
-        val lockResult = lineLockResolver.resolve(
-            LineLockResolver.Input(
-                trainMode = trainMode,
-                primaryLine = newState.primaryLine,
-                lockedLine = newState.lockedLine,
-                lockedCandidateLine = newState.lockedCandidateLine,
-                lockedCandidateCount = newState.lockedCandidateCount
+        val lockWarmupDone =
+            trainMode &&
+                newState.trainStartedAtMs > 0L &&
+                (nowMs - newState.trainStartedAtMs >= lineLockWarmupMs)
+
+        if (lockWarmupDone) {
+            val lockResult = lineLockResolver.resolve(
+                LineLockResolver.Input(
+                    trainMode = trainMode,
+                    primaryLine = newState.primaryLine,
+                    lockedLine = newState.lockedLine,
+                    lockedCandidateLine = newState.lockedCandidateLine,
+                    lockedCandidateCount = newState.lockedCandidateCount
+                )
             )
-        )
 
-        lockedPend = lockResult.lockedPend
+            lockedPend = lockResult.lockedPend
 
-        newState = newState.copy(
-            lockedLine = lockResult.lockedLine,
-            lockedCandidateLine = lockResult.lockedCandidateLine,
-            lockedCandidateCount = lockResult.lockedCandidateCount
-        )
+            newState = newState.copy(
+                lockedLine = lockResult.lockedLine,
+                lockedCandidateLine = lockResult.lockedCandidateLine,
+                lockedCandidateCount = lockResult.lockedCandidateCount
+            )
+        } else {
+            if (!trainMode) {
+                newState = newState.copy(
+                    lockedLine = null,
+                    lockedCandidateLine = null,
+                    lockedCandidateCount = 0
+                )
+            } else {
+                newState = newState.copy(
+                    lockedCandidateLine = null,
+                    lockedCandidateCount = 0
+                )
+            }
+        }
 
         val effectiveLine = newState.lockedLine ?: newState.primaryLine
 
@@ -386,6 +420,12 @@ class NextStationPredictor(
             )
             append(" last=").append(newState.lastName ?: "--")
             append(" train=").append(trainMode)
+            append(" warm=").append(lockWarmupDone)
+            append(" twait=").append(
+                if (trainMode && newState.trainStartedAtMs > 0L) {
+                    max(0L, lineLockWarmupMs - (nowMs - newState.trainStartedAtMs)) / 1000
+                } else 0L
+            ).append("s")
             append(" hold=").append(max(0L, newState.trainHoldUntilMs - nowMs) / 1000).append("s")
             append(" nearest=").append(nearest.name).append("@").append(nearest.line)
             append(" nd=").append(nearestDist.toInt()).append("m")
