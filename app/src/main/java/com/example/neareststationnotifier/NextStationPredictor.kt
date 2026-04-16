@@ -160,12 +160,39 @@ class NextStationPredictor(
                 ?.takeIf { it.isNotBlank() }
         }
 
+        fun isNaturalTrainSwitch(
+            fromName: String?,
+            toName: String,
+            line: String?
+        ): Boolean {
+            if (fromName.isNullOrBlank()) return true
+            if (GeoLineUtils.normalizeStationName(fromName) == GeoLineUtils.normalizeStationName(toName)) return true
+
+            val normalizedLine = line?.let { GeoLineUtils.normalizeLine(it) }?.takeIf { it.isNotBlank() }
+            if (normalizedLine == null) return false
+
+            val fromRecords = stationRecords(fromName)
+                .filter { GeoLineUtils.normalizeLine(it.line) == normalizedLine }
+            val toRecords = stationRecords(toName)
+                .filter { GeoLineUtils.normalizeLine(it.line) == normalizedLine }
+
+            if (fromRecords.isEmpty() || toRecords.isEmpty()) return false
+
+            return fromRecords.any { from ->
+                val next = from.nextStationName?.let { GeoLineUtils.normalizeStationName(it) }
+                val prev = from.prevStationName?.let { GeoLineUtils.normalizeStationName(it) }
+                val toNorm = GeoLineUtils.normalizeStationName(toName)
+                toNorm == next || toNorm == prev
+            }
+        }
+
         var newState = state.copy(trainHoldUntilMs = holdUntil)
         var decision = "keep"
         var pend = 0
         var lockedPend = 0
         var lineMatched = false
         var forceReline = false
+        var adjacencyOk = true
 
         if (state.currentName == null) {
             if (nearestDist <= enterRadiusM) {
@@ -212,6 +239,21 @@ class NextStationPredictor(
                             (currentDist >= 350.0 && nearestDist <= 180.0)
                         )
 
+                adjacencyOk = if (trainMode) {
+                    val fromName = state.lastName ?: state.currentName
+                    isNaturalTrainSwitch(
+                        fromName = fromName,
+                        toName = nearest.name,
+                        line = effectiveLineBeforeSwitch
+                    ) || isNaturalTrainSwitch(
+                        fromName = state.currentName,
+                        toName = nearest.name,
+                        line = effectiveLineBeforeSwitch
+                    )
+                } else {
+                    true
+                }
+
                 val switchLineOk = if (trainMode) {
                     lineMatched || forceReline
                 } else {
@@ -220,6 +262,7 @@ class NextStationPredictor(
 
                 val needSwitch =
                     switchLineOk &&
+                        adjacencyOk &&
                         (nearest.name != state.currentName) &&
                         (nearestDist + switchMarginM < currentDist)
 
@@ -260,6 +303,7 @@ class NextStationPredictor(
                         pendingCount = 0
                     )
                     decision = when {
+                        trainMode && !adjacencyOk -> "keep_adj_guard"
                         trainMode && !lineMatched && forceReline -> "keep_reline_wait"
                         trainMode && !lineMatched -> "keep_line_guard"
                         else -> "keep_reset"
@@ -332,6 +376,7 @@ class NextStationPredictor(
             append(" lcan=").append(newState.lockedCandidateLine ?: "--")
             append(" lmatch=").append(lineMatched)
             append(" freline=").append(forceReline)
+            append(" adjok=").append(adjacencyOk)
             append(" dec=").append(decision)
             append(" adj=").append(nextByAdj ?: "--")
             if (fwdBearing != null) append(" br=").append("%.1f".format(fwdBearing))
