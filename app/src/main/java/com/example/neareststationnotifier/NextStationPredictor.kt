@@ -160,29 +160,39 @@ class NextStationPredictor(
                 ?.takeIf { it.isNotBlank() }
         }
 
+        fun normalizeAdjName(raw: String?): String? {
+            val v = raw?.trim()?.takeIf { it.isNotEmpty() && it != "-" } ?: return null
+            return GeoLineUtils.normalizeStationName(v)
+        }
+
         fun isNaturalTrainSwitch(
             fromName: String?,
             toName: String,
             line: String?
         ): Boolean {
             if (fromName.isNullOrBlank()) return true
-            if (GeoLineUtils.normalizeStationName(fromName) == GeoLineUtils.normalizeStationName(toName)) return true
 
-            val normalizedLine = line?.let { GeoLineUtils.normalizeLine(it) }?.takeIf { it.isNotBlank() }
-            if (normalizedLine == null) return false
+            val fromNorm = GeoLineUtils.normalizeStationName(fromName)
+            val toNorm = GeoLineUtils.normalizeStationName(toName)
+            if (fromNorm == toNorm) return true
+
+            val normalizedLine = line
+                ?.let { GeoLineUtils.normalizeLine(it) }
+                ?.takeIf { it.isNotBlank() }
+                ?: return false
 
             val fromRecords = stationRecords(fromName)
                 .filter { GeoLineUtils.normalizeLine(it.line) == normalizedLine }
+
             val toRecords = stationRecords(toName)
                 .filter { GeoLineUtils.normalizeLine(it.line) == normalizedLine }
 
             if (fromRecords.isEmpty() || toRecords.isEmpty()) return false
 
             return fromRecords.any { from ->
-                val next = from.nextStationName?.let { GeoLineUtils.normalizeStationName(it) }
-                val prev = from.prevStationName?.let { GeoLineUtils.normalizeStationName(it) }
-                val toNorm = GeoLineUtils.normalizeStationName(toName)
-                toNorm == next || toNorm == prev
+                val nextNorm = normalizeAdjName(from.next)
+                val prevNorm = normalizeAdjName(from.prev)
+                toNorm == nextNorm || toNorm == prevNorm
             }
         }
 
@@ -263,11 +273,16 @@ class NextStationPredictor(
                 val needSwitch =
                     switchLineOk &&
                         adjacencyOk &&
-                        (nearest.name != state.currentName) &&
+                        (GeoLineUtils.normalizeStationName(nearest.name) !=
+                            GeoLineUtils.normalizeStationName(state.currentName)) &&
                         (nearestDist + switchMarginM < currentDist)
 
                 if (needSwitch) {
-                    val same = (state.pendingSwitchName == nearest.name)
+                    val same = state.pendingSwitchName?.let {
+                        GeoLineUtils.normalizeStationName(it) ==
+                            GeoLineUtils.normalizeStationName(nearest.name)
+                    } ?: false
+
                     val nextCount = if (same) state.pendingCount + 1 else 1
                     pend = nextCount
                     val confirmTimes = if (trainMode) 1 else 2
@@ -341,7 +356,9 @@ class NextStationPredictor(
                 fwdBearing = fwdBearing,
                 lastName = newState.lastName
             )
-        } else null
+        } else {
+            null
+        }
 
         val nextName = nextByAdj ?: NextStationSelection.pickNextForward(
             curLatLon = curLatLon,
@@ -363,7 +380,10 @@ class NextStationPredictor(
             append("dbg currentLine=").append(effectiveLine ?: "--")
             append(" locked=").append(newState.lockedLine ?: "--")
             append(" primary=").append(newState.primaryLine ?: "--")
-            append(" lines=").append(if (newState.currentLines.isEmpty()) "--" else newState.currentLines.joinToString("|"))
+            append(" lines=").append(
+                if (newState.currentLines.isEmpty()) "--"
+                else newState.currentLines.joinToString("|")
+            )
             append(" last=").append(newState.lastName ?: "--")
             append(" train=").append(trainMode)
             append(" hold=").append(max(0L, newState.trainHoldUntilMs - nowMs) / 1000).append("s")
@@ -385,6 +405,11 @@ class NextStationPredictor(
             if (accuracyM != null) append(" acc=").append("%.0f".format(accuracyM))
         }
 
-        return Result(newState.currentName, nextName, newState, dbg)
+        return Result(
+            currentName = newState.currentName,
+            nextName = nextName,
+            state = newState,
+            debugText = dbg
+        )
     }
 }
