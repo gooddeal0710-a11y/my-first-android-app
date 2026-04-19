@@ -265,15 +265,25 @@ class NextStationPredictor(
 
                 adjacencyOk = if (trainMode) {
                     val fromName = state.lastName ?: state.currentName
-                    isNaturalTrainSwitch(
-                        fromName = fromName,
-                        toName = nearest.name,
-                        line = effectiveLineBeforeSwitch
-                    ) || isNaturalTrainSwitch(
-                        fromName = state.currentName,
-                        toName = nearest.name,
-                        line = effectiveLineBeforeSwitch
-                    )
+                    val candidateLinesForAdj = listOfNotNull(
+                        state.lockedLine,
+                        state.primaryLine,
+                        nearest.line
+                    ).map { GeoLineUtils.normalizeLine(it) }
+                        .filter { it.isNotBlank() }
+                        .distinct()
+
+                    candidateLinesForAdj.any { adjLine ->
+                        isNaturalTrainSwitch(
+                            fromName = fromName,
+                            toName = nearest.name,
+                            line = adjLine
+                        ) || isNaturalTrainSwitch(
+                            fromName = state.currentName,
+                            toName = nearest.name,
+                            line = adjLine
+                        )
+                    }
                 } else {
                     true
                 }
