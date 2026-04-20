@@ -1,11 +1,6 @@
 package com.example.neareststationnotifier
 
-import kotlin.math.atan2
-import kotlin.math.cos
 import kotlin.math.max
-import kotlin.math.sin
-import kotlin.math.sqrt
-import kotlin.math.abs
 
 class NextStationPredictor(
     private val enterRadiusM: Double = 120.0,
@@ -23,48 +18,8 @@ class NextStationPredictor(
 ) {
     private val lineLockResolver = LineLockResolver(confirmTimes = 3)
 
-    data class State(
-        val currentName: String? = null,
-        val primaryLine: String? = null,
-        val lockedLine: String? = null,
-        val currentLines: Set<String> = emptySet(),
-        val lastName: String? = null,
-        val pendingSwitchName: String? = null,
-        val pendingCount: Int = 0,
-        val trainHoldUntilMs: Long = 0L,
-        val trainStartedAtMs: Long = 0L,
-        val lockedCandidateLine: String? = null,
-        val lockedCandidateCount: Int = 0
-    )
-
-    data class Result(
-        val currentName: String?,
-        val nextName: String?,
-        val state: State,
-        val debugText: String = ""
-    )
-
-    private fun coordDistM(a: Pair<Double, Double>, b: Pair<Double, Double>): Double {
-        val r = 6371000.0
-        val lat1 = Math.toRadians(a.first)
-        val lon1 = Math.toRadians(a.second)
-        val lat2 = Math.toRadians(b.first)
-        val lon2 = Math.toRadians(b.second)
-
-        val dLat = lat2 - lat1
-        val dLon = lon2 - lon1
-
-        val h = sin(dLat / 2) * sin(dLat / 2) +
-            cos(lat1) * cos(lat2) * sin(dLon / 2) * sin(dLon / 2)
-
-        val c = 2 * atan2(sqrt(h), sqrt(1 - h))
-        return r * c
-    }
-
-    private fun angleDiffDeg(a: Double, b: Double): Double {
-        val d = abs(a - b) % 360.0
-        return if (d > 180.0) 360.0 - d else d
-    }
+    typealias State = NextStationPredictorState
+    typealias Result = NextStationPredictorResult
 
     fun predict(
         prevLatLon: Pair<Double, Double>?,
@@ -82,7 +37,7 @@ class NextStationPredictor(
         val nowMs = System.currentTimeMillis()
         val wasTrainMode = nowMs < state.trainHoldUntilMs
 
-        val movedDistM = prevLatLon?.let { coordDistM(it, curLatLon) } ?: 0.0
+        val movedDistM = prevLatLon?.let { nextStationCoordDistM(it, curLatLon) } ?: 0.0
         val speedTrain = (speedMps ?: 0.0) >= trainSpeedThreshMps
         val inferredTrain = (speedMps == null) && (movedDistM >= inferredTrainMoveM)
 
@@ -112,154 +67,11 @@ class NextStationPredictor(
             else -> null
         }
 
-        fun stationRecords(name: String): List<StationCandidate> {
-            val nn = GeoLineUtils.normalizeStationName(name)
-            return candidates.filter { GeoLineUtils.normalizeStationName(it.name) == nn }
-        }
-
-        fun linesForStationName(name: String): Set<String> {
-            return stationRecords(name)
-                .map { GeoLineUtils.normalizeLine(it.line) }
-                .filter { it.isNotBlank() }
-                .toSet()
-        }
-
-        fun stationHasLine(name: String, line: String?): Boolean {
-            val nl = line?.let { GeoLineUtils.normalizeLine(it) }?.takeIf { it.isNotBlank() } ?: return false
-            return stationRecords(name).any { GeoLineUtils.normalizeLine(it.line) == nl }
-        }
-
-        fun normalizeAdjName(raw: String?): String? {
-            val v = raw?.trim()?.takeIf { it.isNotEmpty() && it != "-" } ?: return null
-            return GeoLineUtils.normalizeStationName(v)
-        }
-
-        fun findStationOnLine(name: String?, line: String?): StationCandidate? {
-            if (name.isNullOrBlank() || line.isNullOrBlank()) return null
-            val nn = GeoLineUtils.normalizeStationName(name)
-            val nl = GeoLineUtils.normalizeLine(line)
-            return candidates.firstOrNull {
-                GeoLineUtils.normalizeStationName(it.name) == nn &&
-                    GeoLineUtils.normalizeLine(it.line) == nl
-            }
-        }
-        fun bearingScoreForRecord(record: StationCandidate, moveBearing: Double?): Double {
-            if (moveBearing == null || moveBearing.isNaN()) return 0.5
-
-            val dirs = mutableListOf<Double>()
-
-            val prevRec = findStationOnLine(record.prev, record.line)
-            if (prevRec != null) {
-                dirs += GeoLineUtils.bearingFrom(
-                    Pair(prevRec.lat, prevRec.lon),
-                    Pair(record.lat, record.lon)
-                )
-            }
-
-            val nextRec = findStationOnLine(record.next, record.line)
-            if (nextRec != null) {
-                dirs += GeoLineUtils.bearingFrom(
-                    Pair(record.lat, record.lon),
-                    Pair(nextRec.lat, nextRec.lon)
-                )
-            }
-
-            if (dirs.isEmpty()) return 0.5
-
-            val bestDiff = dirs.minOf { angleDiffDeg(moveBearing, it) }
-            return 1.0 - (bestDiff / 180.0)
-        }
-
-        fun distanceScoreForRecord(record: StationCandidate): Double {
-            val d = GeoLineUtils.distM(curLatLon, record)
-            return 1.0 / (1.0 + d)
-        }
-
-        fun choosePrimaryLineForStationName(
-            name: String,
-            preferredLockedLine: String?,
-            preferredPrimaryLine: String?,
-            preferredLines: Set<String>,
-            moveBearing: Double?,
-            trainModeNow: Boolean
-        ): String? {
-            val records = stationRecords(name)
-            if (records.isEmpty()) return null
-
-            val normalizedLocked = preferredLockedLine?.let { GeoLineUtils.normalizeLine(it) }?.takeIf { it.isNotBlank() }
-            val normalizedPrimary = preferredPrimaryLine?.let { GeoLineUtils.normalizeLine(it) }?.takeIf { it.isNotBlank() }
-            val normalizedPreferredLines = preferredLines
-                .map { GeoLineUtils.normalizeLine(it) }
-                .filter { it.isNotBlank() }
-                .toSet()
-
-            val filtered: List<StationCandidate> = when {
-                normalizedLocked != null &&
-                    records.any { GeoLineUtils.normalizeLine(it.line) == normalizedLocked } ->
-                    records.filter { GeoLineUtils.normalizeLine(it.line) == normalizedLocked }
-
-                normalizedPrimary != null &&
-                    records.any { GeoLineUtils.normalizeLine(it.line) == normalizedPrimary } ->
-                    records.filter { GeoLineUtils.normalizeLine(it.line) == normalizedPrimary }
-
-                normalizedPreferredLines.isNotEmpty() &&
-                    records.any { GeoLineUtils.normalizeLine(it.line) in normalizedPreferredLines } ->
-                    records.filter { GeoLineUtils.normalizeLine(it.line) in normalizedPreferredLines }
-
-                else -> records
-            }
-
-            val dirWeight = if (trainModeNow) 0.65 else 0.25
-            val distWeight = 1.0 - dirWeight
-
-            val best = filtered.maxByOrNull { rec ->
-                val b = bearingScoreForRecord(rec, moveBearing)
-                val d = distanceScoreForRecord(rec)
-                dirWeight * b + distWeight * d
-            }
-
-            return best?.line?.let { GeoLineUtils.normalizeLine(it) }?.takeIf { it.isNotBlank() }
-        }
-
-        fun chooseRelineForCurrentStation(currentName: String, moveBearing: Double?): String? {
-            val records = stationRecords(currentName)
-            if (records.isEmpty()) return null
-
-            val dirWeight = if (trainMode) 0.75 else 0.30
-            val distWeight = 1.0 - dirWeight
-
-            val best = records.maxByOrNull { rec ->
-                val b = bearingScoreForRecord(rec, moveBearing)
-                val d = distanceScoreForRecord(rec)
-                dirWeight * b + distWeight * d
-            }
-
-            return best?.line?.let { GeoLineUtils.normalizeLine(it) }?.takeIf { it.isNotBlank() }
-        }
-
-        fun isNaturalTrainSwitch(fromName: String?, toName: String, line: String?): Boolean {
-            if (fromName.isNullOrBlank()) return true
-
-            val fromNorm = GeoLineUtils.normalizeStationName(fromName)
-            val toNorm = GeoLineUtils.normalizeStationName(toName)
-            if (fromNorm == toNorm) return true
-
-            val normalizedLine = line?.let { GeoLineUtils.normalizeLine(it) }?.takeIf { it.isNotBlank() } ?: return false
-
-            val fromRecords = stationRecords(fromName)
-                .filter { GeoLineUtils.normalizeLine(it.line) == normalizedLine }
-
-            val toRecords = stationRecords(toName)
-                .filter { GeoLineUtils.normalizeLine(it.line) == normalizedLine }
-
-            if (fromRecords.isEmpty() || toRecords.isEmpty()) return false
-
-            return fromRecords.any { from ->
-                val nextNorm = normalizeAdjName(from.next)
-                val prevNorm = normalizeAdjName(from.prev)
-                toNorm == nextNorm || toNorm == prevNorm
-            }
-        }
+        val support = NextStationPredictorSupport(
+            candidates = candidates,
+            curLatLon = curLatLon,
+            trainMode = trainMode
+        )
 
         var newState = state.copy(
             trainHoldUntilMs = holdUntil,
@@ -277,7 +89,7 @@ class NextStationPredictor(
         if (state.currentName == null) {
             if (nearestDist <= enterRadiusM) {
                 val nm = nearest.name
-                val pl = choosePrimaryLineForStationName(
+                val pl = support.choosePrimaryLineForStationName(
                     name = nm,
                     preferredLockedLine = state.lockedLine,
                     preferredPrimaryLine = state.primaryLine,
@@ -288,7 +100,7 @@ class NextStationPredictor(
                 newState = newState.copy(
                     currentName = nm,
                     primaryLine = pl,
-                    currentLines = linesForStationName(nm),
+                    currentLines = support.linesForStationName(nm),
                     lastName = null,
                     pendingSwitchName = null,
                     pendingCount = 0
@@ -312,8 +124,8 @@ class NextStationPredictor(
                 var effectiveLineBeforeSwitch = state.lockedLine ?: state.primaryLine
 
                 lineMatched =
-                    stationHasLine(nearest.name, effectiveLineBeforeSwitch) ||
-                        linesForStationName(nearest.name).intersect(state.currentLines).isNotEmpty()
+                    support.stationHasLine(nearest.name, effectiveLineBeforeSwitch) ||
+                        support.linesForStationName(nearest.name).intersect(state.currentLines).isNotEmpty()
 
                 forceReline = trainMode && (
                     !currentDist.isFinite() ||
@@ -331,15 +143,15 @@ class NextStationPredictor(
                         .distinct()
 
                     candidateLinesForAdj.any { adjLine ->
-                        isNaturalTrainSwitch(fromName, nearest.name, adjLine) ||
-                            isNaturalTrainSwitch(state.currentName, nearest.name, adjLine)
+                        support.isNaturalTrainSwitch(fromName, nearest.name, adjLine) ||
+                            support.isNaturalTrainSwitch(state.currentName, nearest.name, adjLine)
                     }
                 } else {
                     true
                 }
 
                 if (trainMode && forceReline && !adjacencyOk && state.currentName != null) {
-                    val relinedLine = chooseRelineForCurrentStation(
+                    val relinedLine = support.chooseRelineForCurrentStation(
                         currentName = state.currentName,
                         moveBearing = fwdBearing
                     )
@@ -358,8 +170,8 @@ class NextStationPredictor(
                         effectiveLineBeforeSwitch = relinedLine
 
                         lineMatched =
-                            stationHasLine(nearest.name, effectiveLineBeforeSwitch) ||
-                                linesForStationName(nearest.name).intersect(newState.currentLines).isNotEmpty()
+                            support.stationHasLine(nearest.name, effectiveLineBeforeSwitch) ||
+                                support.linesForStationName(nearest.name).intersect(newState.currentLines).isNotEmpty()
 
                         adjacencyOk = if (trainMode) {
                             val fromName = state.lastName ?: state.currentName
@@ -372,8 +184,8 @@ class NextStationPredictor(
                                 .distinct()
 
                             candidateLinesForAdj.any { adjLine ->
-                                isNaturalTrainSwitch(fromName, nearest.name, adjLine) ||
-                                    isNaturalTrainSwitch(state.currentName, nearest.name, adjLine)
+                                support.isNaturalTrainSwitch(fromName, nearest.name, adjLine) ||
+                                    support.isNaturalTrainSwitch(state.currentName, nearest.name, adjLine)
                             }
                         } else {
                             true
@@ -407,7 +219,7 @@ class NextStationPredictor(
                     if (nextCount >= confirmTimes) {
                         val old = state.currentName
                         val nm = nearest.name
-                        val pl = choosePrimaryLineForStationName(
+                        val pl = support.choosePrimaryLineForStationName(
                             name = nm,
                             preferredLockedLine = newState.lockedLine,
                             preferredPrimaryLine = newState.primaryLine,
@@ -418,7 +230,7 @@ class NextStationPredictor(
                         newState = newState.copy(
                             currentName = nm,
                             primaryLine = pl,
-                            currentLines = linesForStationName(nm),
+                            currentLines = support.linesForStationName(nm),
                             lastName = old,
                             pendingSwitchName = null,
                             pendingCount = 0
@@ -450,3 +262,117 @@ class NextStationPredictor(
                 }
             }
         }
+
+        val lockWarmupDone =
+            trainMode &&
+                newState.trainStartedAtMs > 0L &&
+                (nowMs - newState.trainStartedAtMs >= lineLockWarmupMs)
+
+        if (lockWarmupDone) {
+            val lockResult = lineLockResolver.resolve(
+                LineLockResolver.Input(
+                    trainMode = trainMode,
+                    primaryLine = newState.primaryLine,
+                    lockedLine = newState.lockedLine,
+                    lockedCandidateLine = newState.lockedCandidateLine,
+                    lockedCandidateCount = newState.lockedCandidateCount
+                )
+            )
+
+            lockedPend = lockResult.lockedPend
+
+            newState = newState.copy(
+                lockedLine = lockResult.lockedLine,
+                lockedCandidateLine = lockResult.lockedCandidateLine,
+                lockedCandidateCount = lockResult.lockedCandidateCount
+            )
+        } else {
+            if (!trainMode) {
+                newState = newState.copy(
+                    lockedLine = null,
+                    lockedCandidateLine = null,
+                    lockedCandidateCount = 0
+                )
+            } else {
+                newState = newState.copy(
+                    lockedCandidateLine = null,
+                    lockedCandidateCount = 0
+                )
+            }
+        }
+
+        val effectiveLine = newState.lockedLine ?: newState.primaryLine
+
+        val nextByAdj = if (trainMode) {
+            NextStationSelection.pickNextByAdjacency(
+                curLatLon = curLatLon,
+                candidates = candidates,
+                currentName = newState.currentName,
+                currentLine = effectiveLine,
+                fwdBearing = fwdBearing,
+                lastName = newState.lastName
+            )
+        } else {
+            null
+        }
+
+        val nextName = nextByAdj ?: NextStationSelection.pickNextForward(
+            curLatLon = curLatLon,
+            candidates = candidates,
+            currentName = newState.currentName,
+            currentLine = effectiveLine,
+            currentLines = newState.currentLines,
+            lastName = newState.lastName,
+            fwdBearing = fwdBearing,
+            trainMode = trainMode,
+            wDir = wDir,
+            wDist = wDist,
+            otherLinePenaltySlow = otherLinePenaltySlow,
+            otherLinePenaltyTrain = otherLinePenaltyTrain,
+            backwardPenaltyTrain = backwardPenaltyTrain
+        )
+
+        val dbg = buildString {
+            append("dbg currentLine=").append(effectiveLine ?: "--")
+            append(" locked=").append(newState.lockedLine ?: "--")
+            append(" primary=").append(newState.primaryLine ?: "--")
+            append(" lines=").append(
+                if (newState.currentLines.isEmpty()) "--"
+                else newState.currentLines.joinToString("|")
+            )
+            append(" last=").append(newState.lastName ?: "--")
+            append(" train=").append(trainMode)
+            append(" warm=").append(lockWarmupDone)
+            append(" twait=").append(
+                if (trainMode && newState.trainStartedAtMs > 0L) {
+                    max(0L, lineLockWarmupMs - (nowMs - newState.trainStartedAtMs)) / 1000
+                } else 0L
+            ).append("s")
+            append(" hold=").append(max(0L, newState.trainHoldUntilMs - nowMs) / 1000).append("s")
+            append(" nearest=").append(nearest.name).append("@").append(nearest.line)
+            append(" nd=").append(nearestDist.toInt()).append("m")
+            append(" cd=").append(if (currentDist.isFinite()) currentDist.toInt() else -1).append("m")
+            append(" moved=").append(movedDistM.toInt()).append("m")
+            append(" pend=").append(pend)
+            append(" lpend=").append(lockedPend)
+            append(" lcan=").append(newState.lockedCandidateLine ?: "--")
+            append(" lmatch=").append(lineMatched)
+            append(" freline=").append(forceReline)
+            append(" relined=").append(relined)
+            append(" adjok=").append(adjacencyOk)
+            append(" dec=").append(decision)
+            append(" adj=").append(nextByAdj ?: "--")
+            if (fwdBearing != null) append(" br=").append("%.1f".format(fwdBearing))
+            if (speedMps != null) append(" sp=").append("%.1f".format(speedMps))
+            append(" inf=").append(inferredTrain)
+            if (accuracyM != null) append(" acc=").append("%.0f".format(accuracyM))
+        }
+
+        return Result(
+            currentName = newState.currentName,
+            nextName = nextName,
+            state = newState,
+            debugText = dbg
+        )
+    }
+}
