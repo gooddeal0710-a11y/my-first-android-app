@@ -5,6 +5,7 @@ import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.sin
 import kotlin.math.sqrt
+import kotlin.math.abs
 
 class NextStationPredictor(
     private val enterRadiusM: Double = 120.0,
@@ -61,7 +62,7 @@ class NextStationPredictor(
     }
 
     private fun angleDiffDeg(a: Double, b: Double): Double {
-        val d = kotlin.math.abs(a - b) % 360.0
+        val d = abs(a - b) % 360.0
         return if (d > 180.0) 360.0 - d else d
     }
 
@@ -79,7 +80,6 @@ class NextStationPredictor(
         }
 
         val nowMs = System.currentTimeMillis()
-
         val wasTrainMode = nowMs < state.trainHoldUntilMs
 
         val movedDistM = prevLatLon?.let { coordDistM(it, curLatLon) } ?: 0.0
@@ -101,27 +101,33 @@ class NextStationPredictor(
 
         val currentDist = state.currentName?.let { curName ->
             val curNorm = GeoLineUtils.normalizeStationName(curName)
-            candidates.filter {
-                GeoLineUtils.normalizeStationName(it.name) == curNorm
-            }.minOfOrNull { GeoLineUtils.distM(curLatLon, it) }
+            candidates
+                .filter { GeoLineUtils.normalizeStationName(it.name) == curNorm }
+                .minOfOrNull { GeoLineUtils.distM(curLatLon, it) }
         } ?: Double.POSITIVE_INFINITY
 
         val fwdBearing = when {
             bearingDeg != null && !bearingDeg.isNaN() -> bearingDeg
-            prevLatLon != null -> GeoLineUtils.bearingFrom(prevLatLon, curLatLon)
+            prevLatLon != null -> GeoLineUtils.bearingFrom(
+                prevLatLon.first,
+                prevLatLon.second,
+                curLatLon.first,
+                curLatLon.second
+            )
             else -> null
         }
 
-        fun stationRecords(name: String): List<StationCandidate> =
-            candidates.filter {
-                GeoLineUtils.normalizeStationName(it.name) == GeoLineUtils.normalizeStationName(name)
-            }
+        fun stationRecords(name: String): List<StationCandidate> {
+            val nn = GeoLineUtils.normalizeStationName(name)
+            return candidates.filter { GeoLineUtils.normalizeStationName(it.name) == nn }
+        }
 
-        fun linesForStationName(name: String): Set<String> =
-            stationRecords(name).asSequence()
+        fun linesForStationName(name: String): Set<String> {
+            return stationRecords(name)
                 .map { GeoLineUtils.normalizeLine(it.line) }
                 .filter { it.isNotBlank() }
                 .toSet()
+        }
 
         fun stationHasLine(name: String, line: String?): Boolean {
             val nl = line?.let { GeoLineUtils.normalizeLine(it) }?.takeIf { it.isNotBlank() } ?: return false
@@ -151,16 +157,20 @@ class NextStationPredictor(
             val prevRec = findStationOnLine(record.prev, record.line)
             if (prevRec != null) {
                 dirs += GeoLineUtils.bearingFrom(
-                    Pair(prevRec.lat, prevRec.lon),
-                    Pair(record.lat, record.lon)
+                    prevRec.lat,
+                    prevRec.lon,
+                    record.lat,
+                    record.lon
                 )
             }
 
             val nextRec = findStationOnLine(record.next, record.line)
             if (nextRec != null) {
                 dirs += GeoLineUtils.bearingFrom(
-                    Pair(record.lat, record.lon),
-                    Pair(nextRec.lat, nextRec.lon)
+                    record.lat,
+                    record.lon,
+                    nextRec.lat,
+                    nextRec.lon
                 )
             }
 
@@ -186,24 +196,20 @@ class NextStationPredictor(
             val records = stationRecords(name)
             if (records.isEmpty()) return null
 
-            val normalizedLocked = preferredLockedLine
-                ?.let { GeoLineUtils.normalizeLine(it) }
-                ?.takeIf { it.isNotBlank() }
-
-            val normalizedPrimary = preferredPrimaryLine
-                ?.let { GeoLineUtils.normalizeLine(it) }
-                ?.takeIf { it.isNotBlank() }
-
+            val normalizedLocked = preferredLockedLine?.let { GeoLineUtils.normalizeLine(it) }?.takeIf { it.isNotBlank() }
+            val normalizedPrimary = preferredPrimaryLine?.let { GeoLineUtils.normalizeLine(it) }?.takeIf { it.isNotBlank() }
             val normalizedPreferredLines = preferredLines
                 .map { GeoLineUtils.normalizeLine(it) }
                 .filter { it.isNotBlank() }
                 .toSet()
 
-            val filtered = when {
-                normalizedLocked != null && records.any { GeoLineUtils.normalizeLine(it.line) == normalizedLocked } ->
+            val filtered: List<StationCandidate> = when {
+                normalizedLocked != null &&
+                    records.any { GeoLineUtils.normalizeLine(it.line) == normalizedLocked } ->
                     records.filter { GeoLineUtils.normalizeLine(it.line) == normalizedLocked }
 
-                normalizedPrimary != null && records.any { GeoLineUtils.normalizeLine(it.line) == normalizedPrimary } ->
+                normalizedPrimary != null &&
+                    records.any { GeoLineUtils.normalizeLine(it.line) == normalizedPrimary } ->
                     records.filter { GeoLineUtils.normalizeLine(it.line) == normalizedPrimary }
 
                 normalizedPreferredLines.isNotEmpty() &&
@@ -216,45 +222,39 @@ class NextStationPredictor(
             val dirWeight = if (trainModeNow) 0.65 else 0.25
             val distWeight = 1.0 - dirWeight
 
-            return filtered.maxByOrNull { rec ->
+            val best = filtered.maxByOrNull { rec ->
                 val b = bearingScoreForRecord(rec, moveBearing)
                 val d = distanceScoreForRecord(rec)
                 dirWeight * b + distWeight * d
-            }?.line?.let { GeoLineUtils.normalizeLine(it) }?.takeIf { it.isNotBlank() }
+            }
+
+            return best?.line?.let { GeoLineUtils.normalizeLine(it) }?.takeIf { it.isNotBlank() }
         }
 
-        fun chooseRelineForCurrentStation(
-            currentName: String,
-            moveBearing: Double?
-        ): String? {
+        fun chooseRelineForCurrentStation(currentName: String, moveBearing: Double?): String? {
             val records = stationRecords(currentName)
             if (records.isEmpty()) return null
 
             val dirWeight = if (trainMode) 0.75 else 0.30
             val distWeight = 1.0 - dirWeight
 
-            return records.maxByOrNull { rec ->
+            val best = records.maxByOrNull { rec ->
                 val b = bearingScoreForRecord(rec, moveBearing)
                 val d = distanceScoreForRecord(rec)
                 dirWeight * b + distWeight * d
-            }?.line?.let { GeoLineUtils.normalizeLine(it) }?.takeIf { it.isNotBlank() }
+            }
+
+            return best?.line?.let { GeoLineUtils.normalizeLine(it) }?.takeIf { it.isNotBlank() }
         }
 
-        fun isNaturalTrainSwitch(
-            fromName: String?,
-            toName: String,
-            line: String?
-        ): Boolean {
+        fun isNaturalTrainSwitch(fromName: String?, toName: String, line: String?): Boolean {
             if (fromName.isNullOrBlank()) return true
 
             val fromNorm = GeoLineUtils.normalizeStationName(fromName)
             val toNorm = GeoLineUtils.normalizeStationName(toName)
             if (fromNorm == toNorm) return true
 
-            val normalizedLine = line
-                ?.let { GeoLineUtils.normalizeLine(it) }
-                ?.takeIf { it.isNotBlank() }
-                ?: return false
+            val normalizedLine = line?.let { GeoLineUtils.normalizeLine(it) }?.takeIf { it.isNotBlank() } ?: return false
 
             val fromRecords = stationRecords(fromName)
                 .filter { GeoLineUtils.normalizeLine(it.line) == normalizedLine }
@@ -275,6 +275,7 @@ class NextStationPredictor(
             trainHoldUntilMs = holdUntil,
             trainStartedAtMs = trainStartedAtMs
         )
+
         var decision = "keep"
         var pend = 0
         var lockedPend = 0
@@ -324,11 +325,10 @@ class NextStationPredictor(
                     stationHasLine(nearest.name, effectiveLineBeforeSwitch) ||
                         linesForStationName(nearest.name).intersect(state.currentLines).isNotEmpty()
 
-                forceReline =
-                    trainMode && (
-                        !currentDist.isFinite() ||
-                            (currentDist >= 350.0 && nearestDist <= 180.0)
-                        )
+                forceReline = trainMode && (
+                    !currentDist.isFinite() ||
+                        (currentDist >= 350.0 && nearestDist <= 180.0)
+                    )
 
                 adjacencyOk = if (trainMode) {
                     val fromName = state.lastName ?: state.currentName
@@ -341,15 +341,8 @@ class NextStationPredictor(
                         .distinct()
 
                     candidateLinesForAdj.any { adjLine ->
-                        isNaturalTrainSwitch(
-                            fromName = fromName,
-                            toName = nearest.name,
-                            line = adjLine
-                        ) || isNaturalTrainSwitch(
-                            fromName = state.currentName,
-                            toName = nearest.name,
-                            line = adjLine
-                        )
+                        isNaturalTrainSwitch(fromName, nearest.name, adjLine) ||
+                            isNaturalTrainSwitch(state.currentName, nearest.name, adjLine)
                     }
                 } else {
                     true
@@ -389,15 +382,8 @@ class NextStationPredictor(
                                 .distinct()
 
                             candidateLinesForAdj.any { adjLine ->
-                                isNaturalTrainSwitch(
-                                    fromName = fromName,
-                                    toName = nearest.name,
-                                    line = adjLine
-                                ) || isNaturalTrainSwitch(
-                                    fromName = state.currentName,
-                                    toName = nearest.name,
-                                    line = adjLine
-                                )
+                                isNaturalTrainSwitch(fromName, nearest.name, adjLine) ||
+                                    isNaturalTrainSwitch(state.currentName, nearest.name, adjLine)
                             }
                         } else {
                             true
@@ -495,3 +481,15 @@ class NextStationPredictor(
 
             newState = newState.copy(
                 lockedLine = lockResult.lockedLine,
+                lockedCandidateLine = lockResult.lockedCandidateLine,
+                lockedCandidateCount = lockResult.lockedCandidateCount
+            )
+        } else {
+            if (!trainMode) {
+                newState = newState.copy(
+                    lockedLine = null,
+                    lockedCandidateLine = null,
+                    lockedCandidateCount = 0
+                )
+            } else {
+                newState =
