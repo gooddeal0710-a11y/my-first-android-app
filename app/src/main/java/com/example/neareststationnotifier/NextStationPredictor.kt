@@ -18,8 +18,26 @@ class NextStationPredictor(
 ) {
     private val lineLockResolver = LineLockResolver(confirmTimes = 3)
 
-    typealias State = NextStationPredictorState
-    typealias Result = NextStationPredictorResult
+    data class State(
+        val currentName: String? = null,
+        val primaryLine: String? = null,
+        val lockedLine: String? = null,
+        val currentLines: Set<String> = emptySet(),
+        val lastName: String? = null,
+        val pendingSwitchName: String? = null,
+        val pendingCount: Int = 0,
+        val trainHoldUntilMs: Long = 0L,
+        val trainStartedAtMs: Long = 0L,
+        val lockedCandidateLine: String? = null,
+        val lockedCandidateCount: Int = 0
+    )
+
+    data class Result(
+        val currentName: String?,
+        val nextName: String?,
+        val state: State,
+        val debugText: String = ""
+    )
 
     fun predict(
         prevLatLon: Pair<Double, Double>?,
