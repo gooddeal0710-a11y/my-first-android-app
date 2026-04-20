@@ -108,12 +108,7 @@ class NextStationPredictor(
 
         val fwdBearing = when {
             bearingDeg != null && !bearingDeg.isNaN() -> bearingDeg
-            prevLatLon != null -> GeoLineUtils.bearingFrom(
-                prevLatLon.first,
-                prevLatLon.second,
-                curLatLon.first,
-                curLatLon.second
-            )
+            prevLatLon != null -> GeoLineUtils.bearingFrom(prevLatLon, curLatLon)
             else -> null
         }
 
@@ -148,7 +143,6 @@ class NextStationPredictor(
                     GeoLineUtils.normalizeLine(it.line) == nl
             }
         }
-
         fun bearingScoreForRecord(record: StationCandidate, moveBearing: Double?): Double {
             if (moveBearing == null || moveBearing.isNaN()) return 0.5
 
@@ -157,20 +151,16 @@ class NextStationPredictor(
             val prevRec = findStationOnLine(record.prev, record.line)
             if (prevRec != null) {
                 dirs += GeoLineUtils.bearingFrom(
-                    prevRec.lat,
-                    prevRec.lon,
-                    record.lat,
-                    record.lon
+                    Pair(prevRec.lat, prevRec.lon),
+                    Pair(record.lat, record.lon)
                 )
             }
 
             val nextRec = findStationOnLine(record.next, record.line)
             if (nextRec != null) {
                 dirs += GeoLineUtils.bearingFrom(
-                    record.lat,
-                    record.lon,
-                    nextRec.lat,
-                    nextRec.lon
+                    Pair(record.lat, record.lon),
+                    Pair(nextRec.lat, nextRec.lon)
                 )
             }
 
@@ -460,36 +450,3 @@ class NextStationPredictor(
                 }
             }
         }
-
-        val lockWarmupDone =
-            trainMode &&
-                newState.trainStartedAtMs > 0L &&
-                (nowMs - newState.trainStartedAtMs >= lineLockWarmupMs)
-
-        if (lockWarmupDone) {
-            val lockResult = lineLockResolver.resolve(
-                LineLockResolver.Input(
-                    trainMode = trainMode,
-                    primaryLine = newState.primaryLine,
-                    lockedLine = newState.lockedLine,
-                    lockedCandidateLine = newState.lockedCandidateLine,
-                    lockedCandidateCount = newState.lockedCandidateCount
-                )
-            )
-
-            lockedPend = lockResult.lockedPend
-
-            newState = newState.copy(
-                lockedLine = lockResult.lockedLine,
-                lockedCandidateLine = lockResult.lockedCandidateLine,
-                lockedCandidateCount = lockResult.lockedCandidateCount
-            )
-        } else {
-            if (!trainMode) {
-                newState = newState.copy(
-                    lockedLine = null,
-                    lockedCandidateLine = null,
-                    lockedCandidateCount = 0
-                )
-            } else {
-                newState =
