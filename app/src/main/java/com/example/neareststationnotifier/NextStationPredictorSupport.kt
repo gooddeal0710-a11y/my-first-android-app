@@ -128,7 +128,8 @@ class NextStationPredictorSupport(
         return best?.line?.let { GeoLineUtils.normalizeLine(it) }?.takeIf { it.isNotBlank() }
     }
 
-    fun isNaturalTrainSwitch(fromName: String?, toName: String, line: String?): Boolean {
+    fun isNaturalTrainSwitch(fromName: String?, toName: String?, line: String?): Boolean {
+        if (toName.isNullOrBlank()) return false
         if (fromName.isNullOrBlank()) return true
 
         val fromNorm = GeoLineUtils.normalizeStationName(fromName)
