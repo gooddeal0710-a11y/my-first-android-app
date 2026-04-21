@@ -132,6 +132,8 @@ class NextStationPredictor(
                 decision = "pending_init"
             }
         } else {
+            val currentNameNonNull = state.currentName!!
+
             if (currentDist <= exitRadiusM) {
                 newState = newState.copy(
                     pendingSwitchName = null,
@@ -151,7 +153,7 @@ class NextStationPredictor(
                     )
 
                 adjacencyOk = if (trainMode) {
-                    val fromName = state.lastName ?: state.currentName
+                    val fromName = state.lastName ?: currentNameNonNull
                     val candidateLinesForAdj = listOfNotNull(
                         state.lockedLine,
                         state.primaryLine,
@@ -162,15 +164,15 @@ class NextStationPredictor(
 
                     candidateLinesForAdj.any { adjLine ->
                         support.isNaturalTrainSwitch(fromName, nearest.name, adjLine) ||
-                            support.isNaturalTrainSwitch(state.currentName, nearest.name, adjLine)
+                            support.isNaturalTrainSwitch(currentNameNonNull, nearest.name, adjLine)
                     }
                 } else {
                     true
                 }
 
-                if (trainMode && forceReline && !adjacencyOk && state.currentName != null) {
+                if (trainMode && forceReline && !adjacencyOk) {
                     val relinedLine = support.chooseRelineForCurrentStation(
-                        currentName = state.currentName,
+                        currentName = currentNameNonNull,
                         moveBearing = fwdBearing
                     )
 
@@ -192,7 +194,7 @@ class NextStationPredictor(
                                 support.linesForStationName(nearest.name).intersect(newState.currentLines).isNotEmpty()
 
                         adjacencyOk = if (trainMode) {
-                            val fromName = state.lastName ?: state.currentName
+                            val fromName = state.lastName ?: currentNameNonNull
                             val candidateLinesForAdj = listOfNotNull(
                                 newState.lockedLine,
                                 newState.primaryLine,
@@ -203,7 +205,7 @@ class NextStationPredictor(
 
                             candidateLinesForAdj.any { adjLine ->
                                 support.isNaturalTrainSwitch(fromName, nearest.name, adjLine) ||
-                                    support.isNaturalTrainSwitch(state.currentName, nearest.name, adjLine)
+                                    support.isNaturalTrainSwitch(currentNameNonNull, nearest.name, adjLine)
                             }
                         } else {
                             true
@@ -221,7 +223,7 @@ class NextStationPredictor(
                     switchLineOk &&
                         adjacencyOk &&
                         (GeoLineUtils.normalizeStationName(nearest.name) !=
-                            GeoLineUtils.normalizeStationName(state.currentName)) &&
+                            GeoLineUtils.normalizeStationName(currentNameNonNull)) &&
                         (nearestDist + switchMarginM < currentDist)
 
                 if (needSwitch) {
@@ -235,7 +237,7 @@ class NextStationPredictor(
                     val confirmTimes = if (trainMode) 1 else 2
 
                     if (nextCount >= confirmTimes) {
-                        val old = state.currentName
+                        val old = currentNameNonNull
                         val nm = nearest.name
                         val pl = support.choosePrimaryLineForStationName(
                             name = nm,
