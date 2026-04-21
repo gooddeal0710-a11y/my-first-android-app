@@ -132,7 +132,7 @@ class NextStationPredictor(
                 decision = "pending_init"
             }
         } else {
-            val currentNameNonNull = state.currentName.orEmpty()
+            val currentName = state.currentName
 
             if (currentDist <= exitRadiusM) {
                 newState = newState.copy(
@@ -153,9 +153,7 @@ class NextStationPredictor(
                     )
 
                 adjacencyOk = if (trainMode) {
-                    val fromNameNonNull = state.lastName.orEmpty().ifBlank { currentNameNonNull }
-                    val nearestNameNonNull = nearest.name
-
+                    val fromName = state.lastName ?: currentName
                     val candidateLinesForAdj = listOfNotNull(
                         state.lockedLine,
                         state.primaryLine,
@@ -165,8 +163,8 @@ class NextStationPredictor(
                         .distinct()
 
                     candidateLinesForAdj.any { adjLine ->
-                        support.isNaturalTrainSwitch(fromNameNonNull, nearestNameNonNull, adjLine) ||
-                            support.isNaturalTrainSwitch(currentNameNonNull, nearestNameNonNull, adjLine)
+                        support.isNaturalTrainSwitch(fromName, nearest.name, adjLine) ||
+                            support.isNaturalTrainSwitch(currentName, nearest.name, adjLine)
                     }
                 } else {
                     true
@@ -174,7 +172,7 @@ class NextStationPredictor(
 
                 if (trainMode && forceReline && !adjacencyOk) {
                     val relinedLine = support.chooseRelineForCurrentStation(
-                        currentName = currentNameNonNull,
+                        currentName = currentName,
                         moveBearing = fwdBearing
                     )
 
@@ -196,9 +194,7 @@ class NextStationPredictor(
                                 support.linesForStationName(nearest.name).intersect(newState.currentLines).isNotEmpty()
 
                         adjacencyOk = if (trainMode) {
-                            val fromNameNonNull = state.lastName.orEmpty().ifBlank { currentNameNonNull }
-                            val nearestNameNonNull = nearest.name
-
+                            val fromName = state.lastName ?: currentName
                             val candidateLinesForAdj = listOfNotNull(
                                 newState.lockedLine,
                                 newState.primaryLine,
@@ -208,8 +204,8 @@ class NextStationPredictor(
                                 .distinct()
 
                             candidateLinesForAdj.any { adjLine ->
-                                support.isNaturalTrainSwitch(fromNameNonNull, nearestNameNonNull, adjLine) ||
-                                    support.isNaturalTrainSwitch(currentNameNonNull, nearestNameNonNull, adjLine)
+                                support.isNaturalTrainSwitch(fromName, nearest.name, adjLine) ||
+                                    support.isNaturalTrainSwitch(currentName, nearest.name, adjLine)
                             }
                         } else {
                             true
@@ -221,7 +217,7 @@ class NextStationPredictor(
                     (if (trainMode) lineMatched || forceReline || relined else true) &&
                         adjacencyOk &&
                         (GeoLineUtils.normalizeStationName(nearest.name) !=
-                            GeoLineUtils.normalizeStationName(currentNameNonNull)) &&
+                            GeoLineUtils.normalizeStationName(currentName)) &&
                         (nearestDist + switchMarginM < currentDist)
 
                 if (needSwitch) {
@@ -235,7 +231,7 @@ class NextStationPredictor(
                     val confirmTimes = if (trainMode) 1 else 2
 
                     if (nextCount >= confirmTimes) {
-                        val old = currentNameNonNull
+                        val old = currentName
                         val nm = nearest.name
                         val pl = support.choosePrimaryLineForStationName(
                             name = nm,
