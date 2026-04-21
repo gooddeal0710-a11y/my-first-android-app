@@ -112,7 +112,9 @@ class NextStationPredictorSupport(
         return best?.line?.let { GeoLineUtils.normalizeLine(it) }?.takeIf { it.isNotBlank() }
     }
 
-    fun chooseRelineForCurrentStation(currentName: String, moveBearing: Double?): String? {
+    fun chooseRelineForCurrentStation(currentName: String?, moveBearing: Double?): String? {
+        if (currentName.isNullOrBlank()) return null
+
         val records = stationRecords(currentName)
         if (records.isEmpty()) return null
 
