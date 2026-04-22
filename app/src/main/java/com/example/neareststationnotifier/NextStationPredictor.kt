@@ -132,7 +132,7 @@ class NextStationPredictor(
                 decision = "pending_init"
             }
         } else {
-            val currentName = state.currentName
+            val currentName: String = requireNotNull(state.currentName)
 
             if (currentDist <= exitRadiusM) {
                 newState = newState.copy(
@@ -153,7 +153,7 @@ class NextStationPredictor(
                     )
 
                 adjacencyOk = if (trainMode) {
-                    val fromName = state.lastName ?: currentName
+                    val fromName: String = state.lastName ?: currentName
                     val candidateLinesForAdj = listOfNotNull(
                         state.lockedLine,
                         state.primaryLine,
@@ -194,7 +194,7 @@ class NextStationPredictor(
                                 support.linesForStationName(nearest.name).intersect(newState.currentLines).isNotEmpty()
 
                         adjacencyOk = if (trainMode) {
-                            val fromName = state.lastName ?: currentName
+                            val fromName: String = state.lastName ?: currentName
                             val candidateLinesForAdj = listOfNotNull(
                                 newState.lockedLine,
                                 newState.primaryLine,
@@ -231,7 +231,7 @@ class NextStationPredictor(
                     val confirmTimes = if (trainMode) 1 else 2
 
                     if (nextCount >= confirmTimes) {
-                        val old = currentName
+                        val old: String = currentName
                         val nm = nearest.name
                         val pl = support.choosePrimaryLineForStationName(
                             name = nm,
