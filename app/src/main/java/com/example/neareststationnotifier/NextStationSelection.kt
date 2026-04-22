@@ -40,8 +40,8 @@ object NextStationSelection {
         val options = sourceRecords
             .flatMap { rec ->
                 listOfNotNull(
-                    rec.next.takeIf { it.isNotBlank() },
-                    rec.prev.takeIf { it.isNotBlank() }
+                    rec.next?.trim()?.takeIf { it.isNotEmpty() && it != "-" },
+                    rec.prev?.trim()?.takeIf { it.isNotEmpty() && it != "-" }
                 )
             }
             .distinct()
@@ -75,17 +75,23 @@ object NextStationSelection {
 
         if (optionCandidates.isEmpty()) return null
 
-        return if (fwdBearing != null) {
-            optionCandidates.maxByOrNull { c ->
-                val lat = c.lat ?: return@maxByOrNull -1e9
-                val lon = c.lon ?: return@maxByOrNull -1e9
+        if (fwdBearing == null) {
+            return optionCandidates.minByOrNull { GeoLineUtils.distM(curLatLon, it) }?.name
+        }
+
+        val best = optionCandidates
+            .mapNotNull { c ->
+                val lat = c.lat ?: return@mapNotNull null
+                val lon = c.lon ?: return@mapNotNull null
                 val toBr = GeoLineUtils.bearingFrom(curLatLon, Pair(lat, lon))
                 val diff = GeoLineUtils.angleDiffDeg(fwdBearing, toBr)
-                cos(Math.toRadians(diff))
-            }?.name
-        } else {
-            optionCandidates.minByOrNull { GeoLineUtils.distM(curLatLon, it) }?.name
-        }
+                val score = cos(Math.toRadians(diff))
+                Triple(c, diff, score)
+            }
+            .filter { (_, diff, _) -> diff <= 70.0 }
+            .maxByOrNull { (_, _, score) -> score }
+
+        return best?.first?.name
     }
 
     fun pickNextForward(
