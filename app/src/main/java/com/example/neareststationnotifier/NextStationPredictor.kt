@@ -176,9 +176,10 @@ class NextStationPredictor(
                         moveBearing = fwdBearing
                     )
 
+                    val currentPrimaryNorm = state.primaryLine?.let { GeoLineUtils.normalizeLine(it) }
+
                     if (!relinedLine.isNullOrBlank() &&
-                        GeoLineUtils.normalizeLine(relinedLine) !=
-                        GeoLineUtils.normalizeLine(state.primaryLine)
+                        GeoLineUtils.normalizeLine(relinedLine) != currentPrimaryNorm
                     ) {
                         newState = newState.copy(
                             primaryLine = relinedLine,
