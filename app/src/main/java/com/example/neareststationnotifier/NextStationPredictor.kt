@@ -9,7 +9,7 @@ class NextStationPredictor(
     private val trainSpeedThreshMps: Double = 5.0,
     private val trainHoldMs: Long = 90_000L,
     private val inferredTrainMoveM: Double = 120.0,
-    private val lineLockWarmupMs: Long = 20_000L,
+    private val lineLockWarmupMs: Long = 35_000L,
     private val wDir: Double = 0.60,
     private val wDist: Double = 0.40,
     private val otherLinePenaltySlow: Double = 0.25,
@@ -103,6 +103,8 @@ class NextStationPredictor(
         var forceReline = false
         var adjacencyOk = true
         var relined = false
+        var relineAttempted = false
+        var strongLineConflict = false
 
         if (state.currentName == null) {
             if (nearestDist <= enterRadiusM) {
@@ -152,6 +154,8 @@ class NextStationPredictor(
                         (currentDist >= 350.0 && nearestDist <= 180.0)
                     )
 
+                strongLineConflict = trainMode && forceReline && !lineMatched
+
                 adjacencyOk = if (trainMode) {
                     val fromName: String = state.lastName ?: currentName
                     val candidateLinesForAdj = listOfNotNull(
@@ -170,7 +174,9 @@ class NextStationPredictor(
                     true
                 }
 
-                if (trainMode && forceReline && !adjacencyOk) {
+                if (trainMode && forceReline) {
+                    relineAttempted = true
+
                     val relinedLine = support.chooseRelineForCurrentStation(
                         currentName = currentName,
                         moveBearing = fwdBearing
@@ -211,12 +217,21 @@ class NextStationPredictor(
                         } else {
                             true
                         }
+                    } else if (strongLineConflict) {
+                        newState = newState.copy(
+                            lockedLine = null,
+                            lockedCandidateLine = null,
+                            lockedCandidateCount = 0
+                        )
                     }
                 }
 
+                val allowAdjGuardBypass =
+                    trainMode && strongLineConflict && (relined || relineAttempted)
+
                 val needSwitch =
                     (if (trainMode) lineMatched || forceReline || relined else true) &&
-                        adjacencyOk &&
+                        (adjacencyOk || allowAdjGuardBypass) &&
                         (GeoLineUtils.normalizeStationName(nearest.name) !=
                             GeoLineUtils.normalizeStationName(currentName)) &&
                         (nearestDist + switchMarginM < currentDist)
@@ -252,6 +267,7 @@ class NextStationPredictor(
                         )
                         decision = when {
                             relined -> "switch_after_reline"
+                            forceReline -> "switch_force_reline"
                             lineMatched -> "switch_confirmed"
                             else -> "switch_reline"
                         }
@@ -269,6 +285,7 @@ class NextStationPredictor(
                     )
                     decision = when {
                         trainMode && !adjacencyOk && relined -> "keep_adj_after_reline"
+                        trainMode && !adjacencyOk && allowAdjGuardBypass -> "keep_reline_bypass_wait"
                         trainMode && !adjacencyOk -> "keep_adj_guard"
                         trainMode && !lineMatched && forceReline -> "keep_reline_wait"
                         trainMode && !lineMatched -> "keep_line_guard"
@@ -278,12 +295,14 @@ class NextStationPredictor(
             }
         }
 
+        val skipLockResolveThisTurn = trainMode && (strongLineConflict || relined)
+
         val lockWarmupDone =
             trainMode &&
                 newState.trainStartedAtMs > 0L &&
                 (nowMs - newState.trainStartedAtMs >= lineLockWarmupMs)
 
-        if (lockWarmupDone) {
+        if (lockWarmupDone && !skipLockResolveThisTurn) {
             val lockResult = lineLockResolver.resolve(
                 LineLockResolver.Input(
                     trainMode = trainMode,
@@ -302,7 +321,7 @@ class NextStationPredictor(
                 lockedCandidateCount = lockResult.lockedCandidateCount
             )
         } else {
-            if (!trainMode) {
+            if (!trainMode || skipLockResolveThisTurn) {
                 newState = newState.copy(
                     lockedLine = null,
                     lockedCandidateLine = null,
@@ -374,6 +393,8 @@ class NextStationPredictor(
             append(" lmatch=").append(lineMatched)
             append(" freline=").append(forceReline)
             append(" relined=").append(relined)
+            append(" rtry=").append(relineAttempted)
+            append(" conflict=").append(strongLineConflict)
             append(" adjok=").append(adjacencyOk)
             append(" dec=").append(decision)
             append(" adj=").append(nextByAdj ?: "--")
