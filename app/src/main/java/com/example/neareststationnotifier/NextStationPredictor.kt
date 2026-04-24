@@ -105,6 +105,8 @@ class NextStationPredictor(
         var relined = false
         var relineAttempted = false
         var strongLineConflict = false
+        var currentMissing = false
+        var sameLineAdvanceLikely = false
 
         if (state.currentName == null) {
             if (nearestDist <= enterRadiusM) {
@@ -155,6 +157,7 @@ class NextStationPredictor(
                     )
 
                 strongLineConflict = trainMode && forceReline && !lineMatched
+                currentMissing = !currentDist.isFinite()
 
                 adjacencyOk = if (trainMode) {
                     val fromName: String = state.lastName ?: currentName
@@ -223,18 +226,33 @@ class NextStationPredictor(
                             lockedCandidateLine = null,
                             lockedCandidateCount = 0
                         )
+                        effectiveLineBeforeSwitch = newState.primaryLine
                     }
                 }
 
+                sameLineAdvanceLikely =
+                    trainMode &&
+                        (
+                            support.stationHasLine(nearest.name, effectiveLineBeforeSwitch) ||
+                                support.linesForStationName(nearest.name).intersect(newState.currentLines).isNotEmpty()
+                            ) &&
+                        (
+                            currentMissing ||
+                                (nearestDist + switchMarginM < currentDist)
+                            )
+
                 val allowAdjGuardBypass =
-                    trainMode && strongLineConflict && (relined || relineAttempted)
+                    trainMode && (
+                        (strongLineConflict && (relined || relineAttempted)) ||
+                            sameLineAdvanceLikely
+                        )
 
                 val needSwitch =
                     (if (trainMode) lineMatched || forceReline || relined else true) &&
                         (adjacencyOk || allowAdjGuardBypass) &&
                         (GeoLineUtils.normalizeStationName(nearest.name) !=
                             GeoLineUtils.normalizeStationName(currentName)) &&
-                        (nearestDist + switchMarginM < currentDist)
+                        (currentMissing || (nearestDist + switchMarginM < currentDist))
 
                 if (needSwitch) {
                     val same = state.pendingSwitchName?.let {
@@ -267,7 +285,8 @@ class NextStationPredictor(
                         )
                         decision = when {
                             relined -> "switch_after_reline"
-                            forceReline -> "switch_force_reline"
+                            forceReline && strongLineConflict -> "switch_force_reline"
+                            currentMissing && sameLineAdvanceLikely -> "switch_missing_current"
                             lineMatched -> "switch_confirmed"
                             else -> "switch_reline"
                         }
@@ -285,6 +304,7 @@ class NextStationPredictor(
                     )
                     decision = when {
                         trainMode && !adjacencyOk && relined -> "keep_adj_after_reline"
+                        trainMode && !adjacencyOk && currentMissing && sameLineAdvanceLikely -> "keep_missing_current_wait"
                         trainMode && !adjacencyOk && allowAdjGuardBypass -> "keep_reline_bypass_wait"
                         trainMode && !adjacencyOk -> "keep_adj_guard"
                         trainMode && !lineMatched && forceReline -> "keep_reline_wait"
@@ -295,7 +315,8 @@ class NextStationPredictor(
             }
         }
 
-        val skipLockResolveThisTurn = trainMode && (strongLineConflict || relined)
+        val skipLockResolveThisTurn =
+            trainMode && (strongLineConflict || relined || (currentMissing && sameLineAdvanceLikely))
 
         val lockWarmupDone =
             trainMode &&
@@ -395,6 +416,8 @@ class NextStationPredictor(
             append(" relined=").append(relined)
             append(" rtry=").append(relineAttempted)
             append(" conflict=").append(strongLineConflict)
+            append(" cmiss=").append(currentMissing)
+            append(" sladv=").append(sameLineAdvanceLikely)
             append(" adjok=").append(adjacencyOk)
             append(" dec=").append(decision)
             append(" adj=").append(nextByAdj ?: "--")
