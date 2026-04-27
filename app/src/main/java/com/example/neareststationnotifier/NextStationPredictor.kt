@@ -107,6 +107,8 @@ class NextStationPredictor(
         var strongLineConflict = false
         var currentMissing = false
         var sameLineAdvanceLikely = false
+        var lockedLineMismatch = false
+        var suppressCrossLineSwitch = false
 
         if (state.currentName == null) {
             if (nearestDist <= enterRadiusM) {
@@ -241,6 +243,17 @@ class NextStationPredictor(
                                 (nearestDist + switchMarginM < currentDist)
                             )
 
+                lockedLineMismatch =
+                    trainMode &&
+                        !newState.lockedLine.isNullOrBlank() &&
+                        !support.stationHasLine(nearest.name, newState.lockedLine)
+
+                suppressCrossLineSwitch =
+                    lockedLineMismatch &&
+                        !strongLineConflict &&
+                        !relined &&
+                        !lineMatched
+
                 val allowAdjGuardBypass =
                     trainMode && (
                         (strongLineConflict && (relined || relineAttempted)) ||
@@ -248,7 +261,8 @@ class NextStationPredictor(
                         )
 
                 val needSwitch =
-                    (if (trainMode) lineMatched || forceReline || relined else true) &&
+                    !suppressCrossLineSwitch &&
+                        (if (trainMode) lineMatched || forceReline || relined else true) &&
                         (adjacencyOk || allowAdjGuardBypass) &&
                         (GeoLineUtils.normalizeStationName(nearest.name) !=
                             GeoLineUtils.normalizeStationName(currentName)) &&
@@ -303,6 +317,7 @@ class NextStationPredictor(
                         pendingCount = 0
                     )
                     decision = when {
+                        suppressCrossLineSwitch -> "keep_locked_crossline_guard"
                         trainMode && !adjacencyOk && relined -> "keep_adj_after_reline"
                         trainMode && !adjacencyOk && currentMissing && sameLineAdvanceLikely -> "keep_missing_current_wait"
                         trainMode && !adjacencyOk && allowAdjGuardBypass -> "keep_reline_bypass_wait"
@@ -316,7 +331,7 @@ class NextStationPredictor(
         }
 
         val skipLockResolveThisTurn =
-            trainMode && (strongLineConflict || relined || (currentMissing && sameLineAdvanceLikely))
+            trainMode && (strongLineConflict || relined)
 
         val lockWarmupDone =
             trainMode &&
@@ -418,6 +433,8 @@ class NextStationPredictor(
             append(" conflict=").append(strongLineConflict)
             append(" cmiss=").append(currentMissing)
             append(" sladv=").append(sameLineAdvanceLikely)
+            append(" llmis=").append(lockedLineMismatch)
+            append(" xsup=").append(suppressCrossLineSwitch)
             append(" adjok=").append(adjacencyOk)
             append(" dec=").append(decision)
             append(" adj=").append(nextByAdj ?: "--")
