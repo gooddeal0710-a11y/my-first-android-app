@@ -79,16 +79,25 @@ object NextStationSelection {
             return optionCandidates.minByOrNull { GeoLineUtils.distM(curLatLon, it) }?.name
         }
 
+        val dists = optionCandidates.map { GeoLineUtils.distM(curLatLon, it) }.filter { it.isFinite() }
+        val maxDist = dists.maxOrNull()?.takeIf { it > 0.0 } ?: 1.0
+
         val best = optionCandidates
             .mapNotNull { c ->
                 val lat = c.lat ?: return@mapNotNull null
                 val lon = c.lon ?: return@mapNotNull null
                 val toBr = GeoLineUtils.bearingFrom(curLatLon, Pair(lat, lon))
                 val diff = GeoLineUtils.angleDiffDeg(fwdBearing, toBr)
-                val score = cos(Math.toRadians(diff))
+                val dirScore = cos(Math.toRadians(diff))
+                val dist = GeoLineUtils.distM(curLatLon, c)
+                val distScore = if (dist.isFinite()) {
+                    1.0 - (dist / maxDist).coerceIn(0.0, 1.0)
+                } else {
+                    0.0
+                }
+                val score = 0.75 * dirScore + 0.25 * distScore
                 Triple(c, diff, score)
             }
-            .filter { (_, diff, _) -> diff <= 70.0 }
             .maxByOrNull { (_, _, score) -> score }
 
         return best?.first?.name
