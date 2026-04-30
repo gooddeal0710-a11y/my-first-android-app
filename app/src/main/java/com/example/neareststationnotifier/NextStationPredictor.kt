@@ -194,7 +194,6 @@ class NextStationPredictor(
                     ) {
                         newState = newState.copy(
                             primaryLine = relinedLine,
-                            lockedLine = null,
                             lockedCandidateLine = null,
                             lockedCandidateCount = 0
                         )
@@ -222,13 +221,6 @@ class NextStationPredictor(
                         } else {
                             true
                         }
-                    } else if (strongLineConflict) {
-                        newState = newState.copy(
-                            lockedLine = null,
-                            lockedCandidateLine = null,
-                            lockedCandidateCount = 0
-                        )
-                        effectiveLineBeforeSwitch = newState.primaryLine
                     }
                 }
 
@@ -357,14 +349,16 @@ class NextStationPredictor(
                 lockedCandidateCount = lockResult.lockedCandidateCount
             )
         } else {
-            if (!trainMode || skipLockResolveThisTurn) {
+            if (!trainMode) {
                 newState = newState.copy(
                     lockedLine = null,
                     lockedCandidateLine = null,
                     lockedCandidateCount = 0
                 )
             } else {
+                // train mode中は lock を保持する。今回は更新だけ保留。
                 newState = newState.copy(
+                    lockedLine = newState.lockedLine,
                     lockedCandidateLine = null,
                     lockedCandidateCount = 0
                 )
