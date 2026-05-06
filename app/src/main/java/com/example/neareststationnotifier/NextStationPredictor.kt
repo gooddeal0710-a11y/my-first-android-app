@@ -184,7 +184,6 @@ class NextStationPredictor(
                 } else {
                     true
                 }
-
                 if (trainMode && forceReline) {
                     relineAttempted = true
 
@@ -359,7 +358,6 @@ class NextStationPredictor(
 
         val primaryNorm = newState.primaryLine?.let { GeoLineUtils.normalizeLine(it) }
         val lockedNorm = newState.lockedLine?.let { GeoLineUtils.normalizeLine(it) }
-
         val currentSupportsPrimary =
             !newState.currentName.isNullOrBlank() &&
                 !newState.primaryLine.isNullOrBlank() &&
@@ -471,4 +469,36 @@ class NextStationPredictor(
                 } else 0L
             ).append("s")
             append(" hold=").append(max(0L, newState.trainHoldUntilMs - nowMs) / 1000).append("s")
-            append(" nearest=").append(nearest.name).a
+            append(" nearest=").append(nearest.name).append("@").append(nearest.line)
+            append(" nd=").append(nearestDist.toInt()).append("m")
+            append(" cd=").append(if (currentDist.isFinite()) currentDist.toInt() else -1).append("m")
+            append(" moved=").append(movedDistM.toInt()).append("m")
+            append(" pend=").append(pend)
+            append(" lpend=").append(lockedPend)
+            append(" lcan=").append(newState.lockedCandidateLine ?: "--")
+            append(" lmatch=").append(lineMatched)
+            append(" freline=").append(forceReline)
+            append(" relined=").append(relined)
+            append(" rtry=").append(relineAttempted)
+            append(" conflict=").append(strongLineConflict)
+            append(" cmiss=").append(currentMissing)
+            append(" sladv=").append(sameLineAdvanceLikely)
+            append(" llmis=").append(lockedLineMismatch)
+            append(" xsup=").append(suppressCrossLineSwitch)
+            append(" xblk=").append(lockedCrossLineBlock)
+            append(" adjok=").append(adjacencyOk)
+            append(" frelock=").append(fastRelock)
+            append(" dec=").append(decision)
+            append(" adj=").append(nextByAdj ?: "--")
+            if (fwdBearing != null) append(" br=").append("%.1f".format(fwdBearing))
+            if (speedMps != null) append(" sp=").append("%.1f".format(speedMps))
+            append(" inf=").append(inferredTrain)
+            if (accuracyM != null) append(" acc=").append("%.0f".format(accuracyM))
+        }return Result(
+            currentName = newState.currentName,
+            nextName = nextName,
+            state = newState,
+            debugText = dbg
+        )
+    }
+}
