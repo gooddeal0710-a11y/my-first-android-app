@@ -1,7 +1,5 @@
 package com.example.neareststationnotifier
 
-import kotlin.math.max
-
 class NextStationPredictor(
     private val enterRadiusM: Double = 120.0,
     private val exitRadiusM: Double = 180.0,
@@ -144,7 +142,7 @@ class NextStationPredictor(
                 decision = "pending_init"
             }
         } else {
-            val currentName: String = requireNotNull(state.currentName)
+            val currentName = state.currentName
 
             if (currentDist <= exitRadiusM) {
                 newState = newState.copy(
@@ -168,7 +166,7 @@ class NextStationPredictor(
                 currentMissing = !currentDist.isFinite()
 
                 adjacencyOk = if (trainMode) {
-                    val fromName: String = state.lastName ?: currentName
+                    val fromName = state.lastName ?: currentName
                     val candidateLinesForAdj = listOfNotNull(
                         state.lockedLine,
                         state.primaryLine,
@@ -184,6 +182,7 @@ class NextStationPredictor(
                 } else {
                     true
                 }
+
                 if (trainMode && forceReline) {
                     relineAttempted = true
 
@@ -210,7 +209,7 @@ class NextStationPredictor(
                                 support.linesForStationName(nearest.name).intersect(newState.currentLines).isNotEmpty()
 
                         adjacencyOk = if (trainMode) {
-                            val fromName: String = state.lastName ?: currentName
+                            val fromName = state.lastName ?: currentName
                             val candidateLinesForAdj = listOfNotNull(
                                 newState.lockedLine,
                                 newState.primaryLine,
@@ -293,7 +292,7 @@ class NextStationPredictor(
                     val confirmTimes = if (trainMode) 1 else 2
 
                     if (nextCount >= confirmTimes) {
-                        val old: String = currentName
+                        val old = currentName
                         val nm = nearest.name
                         val pl = support.choosePrimaryLineForStationName(
                             name = nm,
@@ -358,6 +357,7 @@ class NextStationPredictor(
 
         val primaryNorm = newState.primaryLine?.let { GeoLineUtils.normalizeLine(it) }
         val lockedNorm = newState.lockedLine?.let { GeoLineUtils.normalizeLine(it) }
+
         val currentSupportsPrimary =
             !newState.currentName.isNullOrBlank() &&
                 !newState.primaryLine.isNullOrBlank() &&
@@ -451,50 +451,41 @@ class NextStationPredictor(
             backwardPenaltyTrain = backwardPenaltyTrain
         )
 
-        val dbg = buildString {
-            append("dbg currentLine=").append(effectiveLine ?: "--")
-            append(" locked=").append(newState.lockedLine ?: "--")
-            append(" primary=").append(newState.primaryLine ?: "--")
-            append(" lines=").append(
-                if (newState.currentLines.isEmpty()) "--"
-                else newState.currentLines.joinToString("|")
-            )
-            append(" last=").append(newState.lastName ?: "--")
-            append(" train=").append(trainMode)
-            append(" warm=").append(lockWarmupDone)
-            append(" lallow=").append(lockAllowed)
-            append(" twait=").append(
-                if (trainMode && newState.trainStartedAtMs > 0L) {
-                    max(0L, lineLockWarmupMs - (nowMs - newState.trainStartedAtMs)) / 1000
-                } else 0L
-            ).append("s")
-            append(" hold=").append(max(0L, newState.trainHoldUntilMs - nowMs) / 1000).append("s")
-            append(" nearest=").append(nearest.name).append("@").append(nearest.line)
-            append(" nd=").append(nearestDist.toInt()).append("m")
-            append(" cd=").append(if (currentDist.isFinite()) currentDist.toInt() else -1).append("m")
-            append(" moved=").append(movedDistM.toInt()).append("m")
-            append(" pend=").append(pend)
-            append(" lpend=").append(lockedPend)
-            append(" lcan=").append(newState.lockedCandidateLine ?: "--")
-            append(" lmatch=").append(lineMatched)
-            append(" freline=").append(forceReline)
-            append(" relined=").append(relined)
-            append(" rtry=").append(relineAttempted)
-            append(" conflict=").append(strongLineConflict)
-            append(" cmiss=").append(currentMissing)
-            append(" sladv=").append(sameLineAdvanceLikely)
-            append(" llmis=").append(lockedLineMismatch)
-            append(" xsup=").append(suppressCrossLineSwitch)
-            append(" xblk=").append(lockedCrossLineBlock)
-            append(" adjok=").append(adjacencyOk)
-            append(" frelock=").append(fastRelock)
-            append(" dec=").append(decision)
-            append(" adj=").append(nextByAdj ?: "--")
-            if (fwdBearing != null) append(" br=").append("%.1f".format(fwdBearing))
-            if (speedMps != null) append(" sp=").append("%.1f".format(speedMps))
-            append(" inf=").append(inferredTrain)
-            if (accuracyM != null) append(" acc=").append("%.0f".format(accuracyM))
-        }return Result(
+        val dbg = NextStationPredictorDebug.build(
+            effectiveLine = effectiveLine,
+            newState = newState,
+            trainMode = trainMode,
+            lockWarmupDone = lockWarmupDone,
+            lockAllowed = lockAllowed,
+            lineLockWarmupMs = lineLockWarmupMs,
+            nowMs = nowMs,
+            nearest = nearest,
+            nearestDist = nearestDist,
+            currentDist = currentDist,
+            movedDistM = movedDistM,
+            pend = pend,
+            lockedPend = lockedPend,
+            lineMatched = lineMatched,
+            forceReline = forceReline,
+            relined = relined,
+            relineAttempted = relineAttempted,
+            strongLineConflict = strongLineConflict,
+            currentMissing = currentMissing,
+            sameLineAdvanceLikely = sameLineAdvanceLikely,
+            lockedLineMismatch = lockedLineMismatch,
+            suppressCrossLineSwitch = suppressCrossLineSwitch,
+            lockedCrossLineBlock = lockedCrossLineBlock,
+            adjacencyOk = adjacencyOk,
+            fastRelock = fastRelock,
+            decision = decision,
+            nextByAdj = nextByAdj,
+            fwdBearing = fwdBearing,
+            speedMps = speedMps,
+            inferredTrain = inferredTrain,
+            accuracyM = accuracyM
+        )
+
+        return Result(
             currentName = newState.currentName,
             nextName = nextName,
             state = newState,
