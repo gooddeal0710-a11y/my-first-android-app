@@ -98,327 +98,33 @@ class NextStationPredictor(
             lockedCandidateCount = if (justEnteredTrainMode) 0 else state.lockedCandidateCount
         )
 
-        var decision = "keep"
-        var pend = 0
-        var lockedPend = 0
-        var lineMatched = false
-        var forceReline = false
-        var adjacencyOk = true
-        var relined = false
-        var relineAttempted = false
-        var strongLineConflict = false
-        var currentMissing = false
-        var sameLineAdvanceLikely = false
-        var lockedLineMismatch = false
-        var suppressCrossLineSwitch = false
-        var fastRelock = false
-        var lockedCrossLineBlock = false
+        val switchOut = NextStationPredictorSwitchLogic.run(
+            state = newState,
+            support = support,
+            nearest = nearest,
+            nearestDist = nearestDist,
+            currentDist = currentDist,
+            trainMode = trainMode,
+            enterRadiusM = enterRadiusM,
+            exitRadiusM = exitRadiusM,
+            switchMarginM = switchMarginM,
+            fwdBearing = fwdBearing
+        )
+        newState = switchOut.state
 
-        if (state.currentName == null) {
-            if (nearestDist <= enterRadiusM) {
-                val nm = nearest.name
-                val pl = support.choosePrimaryLineForStationName(
-                    name = nm,
-                    preferredLockedLine = state.lockedLine,
-                    preferredPrimaryLine = state.primaryLine,
-                    preferredLines = state.currentLines,
-                    moveBearing = fwdBearing,
-                    trainModeNow = trainMode
-                )
-                newState = newState.copy(
-                    currentName = nm,
-                    primaryLine = pl,
-                    currentLines = support.linesForStationName(nm),
-                    lastName = null,
-                    pendingSwitchName = null,
-                    pendingCount = 0
-                )
-                decision = "set_current_enter"
-            } else {
-                newState = newState.copy(
-                    pendingSwitchName = nearest.name,
-                    pendingCount = 1
-                )
-                decision = "pending_init"
-            }
-        } else {
-            val currentName = state.currentName
-
-            if (currentDist <= exitRadiusM) {
-                newState = newState.copy(
-                    pendingSwitchName = null,
-                    pendingCount = 0
-                )
-                decision = "keep_hysteresis"
-            } else {
-                var effectiveLineBeforeSwitch = state.lockedLine ?: state.primaryLine
-
-                lineMatched =
-                    support.stationHasLine(nearest.name, effectiveLineBeforeSwitch) ||
-                        support.linesForStationName(nearest.name).intersect(state.currentLines).isNotEmpty()
-
-                forceReline = trainMode && (
-                    !currentDist.isFinite() ||
-                        (currentDist >= 350.0 && nearestDist <= 180.0)
-                    )
-
-                strongLineConflict = trainMode && forceReline && !lineMatched
-                currentMissing = !currentDist.isFinite()
-
-                adjacencyOk = if (trainMode) {
-                    val fromName = state.lastName ?: currentName
-                    val candidateLinesForAdj = listOfNotNull(
-                        state.lockedLine,
-                        state.primaryLine,
-                        nearest.line
-                    ).map { GeoLineUtils.normalizeLine(it) }
-                        .filter { it.isNotBlank() }
-                        .distinct()
-
-                    candidateLinesForAdj.any { adjLine ->
-                        support.isNaturalTrainSwitch(fromName, nearest.name, adjLine) ||
-                            support.isNaturalTrainSwitch(currentName, nearest.name, adjLine)
-                    }
-                } else {
-                    true
-                }
-
-                if (trainMode && forceReline) {
-                    relineAttempted = true
-
-                    val relinedLine = support.chooseRelineForCurrentStation(
-                        currentName = currentName,
-                        moveBearing = fwdBearing
-                    )
-
-                    val currentPrimaryNorm = state.primaryLine?.let { GeoLineUtils.normalizeLine(it) }
-
-                    if (!relinedLine.isNullOrBlank() &&
-                        GeoLineUtils.normalizeLine(relinedLine) != currentPrimaryNorm
-                    ) {
-                        newState = newState.copy(
-                            primaryLine = relinedLine,
-                            lockedCandidateLine = null,
-                            lockedCandidateCount = 0
-                        )
-                        relined = true
-                        effectiveLineBeforeSwitch = relinedLine
-
-                        lineMatched =
-                            support.stationHasLine(nearest.name, effectiveLineBeforeSwitch) ||
-                                support.linesForStationName(nearest.name).intersect(newState.currentLines).isNotEmpty()
-
-                        adjacencyOk = if (trainMode) {
-                            val fromName = state.lastName ?: currentName
-                            val candidateLinesForAdj = listOfNotNull(
-                                newState.lockedLine,
-                                newState.primaryLine,
-                                nearest.line
-                            ).map { GeoLineUtils.normalizeLine(it) }
-                                .filter { it.isNotBlank() }
-                                .distinct()
-
-                            candidateLinesForAdj.any { adjLine ->
-                                support.isNaturalTrainSwitch(fromName, nearest.name, adjLine) ||
-                                    support.isNaturalTrainSwitch(currentName, nearest.name, adjLine)
-                            }
-                        } else {
-                            true
-                        }
-                    }
-                }
-
-                sameLineAdvanceLikely =
-                    trainMode &&
-                        (
-                            support.stationHasLine(nearest.name, effectiveLineBeforeSwitch) ||
-                                support.linesForStationName(nearest.name).intersect(newState.currentLines).isNotEmpty()
-                            ) &&
-                        (
-                            currentMissing ||
-                                (nearestDist + switchMarginM < currentDist)
-                            )
-
-                lockedLineMismatch =
-                    trainMode &&
-                        !newState.lockedLine.isNullOrBlank() &&
-                        !support.stationHasLine(nearest.name, newState.lockedLine)
-
-                suppressCrossLineSwitch =
-                    lockedLineMismatch &&
-                        !strongLineConflict &&
-                        !relined &&
-                        !lineMatched
-
-                lockedCrossLineBlock =
-                    trainMode &&
-                        !newState.lockedLine.isNullOrBlank() &&
-                        !support.stationHasLine(nearest.name, newState.lockedLine) &&
-                        !lineMatched &&
-                        !adjacencyOk
-
-                val allowAdjGuardBypass =
-                    trainMode && (
-                        (strongLineConflict && (relined || relineAttempted)) ||
-                            sameLineAdvanceLikely
-                        )
-
-                val allowTrainLineGate =
-                    if (!trainMode) {
-                        true
-                    } else {
-                        lineMatched ||
-                            relined ||
-                            (forceReline && newState.lockedLine.isNullOrBlank())
-                    }
-
-                val needSwitch =
-                    !suppressCrossLineSwitch &&
-                        !lockedCrossLineBlock &&
-                        allowTrainLineGate &&
-                        (adjacencyOk || allowAdjGuardBypass) &&
-                        (GeoLineUtils.normalizeStationName(nearest.name) !=
-                            GeoLineUtils.normalizeStationName(currentName)) &&
-                        (currentMissing || (nearestDist + switchMarginM < currentDist))
-
-                if (needSwitch) {
-                    val same = state.pendingSwitchName?.let {
-                        GeoLineUtils.normalizeStationName(it) ==
-                            GeoLineUtils.normalizeStationName(nearest.name)
-                    } ?: false
-
-                    val nextCount = if (same) state.pendingCount + 1 else 1
-                    pend = nextCount
-                    val confirmTimes = if (trainMode) 1 else 2
-
-                    if (nextCount >= confirmTimes) {
-                        val old = currentName
-                        val nm = nearest.name
-                        val pl = support.choosePrimaryLineForStationName(
-                            name = nm,
-                            preferredLockedLine = newState.lockedLine,
-                            preferredPrimaryLine = newState.primaryLine,
-                            preferredLines = newState.currentLines,
-                            moveBearing = fwdBearing,
-                            trainModeNow = trainMode
-                        )
-                        newState = newState.copy(
-                            currentName = nm,
-                            primaryLine = pl,
-                            currentLines = support.linesForStationName(nm),
-                            lastName = old,
-                            pendingSwitchName = null,
-                            pendingCount = 0
-                        )
-                        decision = when {
-                            relined -> "switch_after_reline"
-                            forceReline && strongLineConflict -> "switch_force_reline"
-                            currentMissing && sameLineAdvanceLikely -> "switch_missing_current"
-                            lineMatched -> "switch_confirmed"
-                            else -> "switch_reline"
-                        }
-                    } else {
-                        newState = newState.copy(
-                            pendingSwitchName = nearest.name,
-                            pendingCount = nextCount
-                        )
-                        decision = "switch_pending"
-                    }
-                } else {
-                    newState = newState.copy(
-                        pendingSwitchName = null,
-                        pendingCount = 0
-                    )
-                    decision = when {
-                        lockedCrossLineBlock -> "keep_locked_crossline_block"
-                        suppressCrossLineSwitch -> "keep_locked_crossline_guard"
-                        trainMode && !adjacencyOk && relined -> "keep_adj_after_reline"
-                        trainMode && !adjacencyOk && currentMissing && sameLineAdvanceLikely -> "keep_missing_current_wait"
-                        trainMode && !adjacencyOk && allowAdjGuardBypass -> "keep_reline_bypass_wait"
-                        trainMode && !adjacencyOk -> "keep_adj_guard"
-                        trainMode && !lineMatched && forceReline -> "keep_reline_wait"
-                        trainMode && !lineMatched -> "keep_line_guard"
-                        else -> "keep_reset"
-                    }
-                }
-            }
-        }
-
-        val lockWarmupDone =
-            trainMode &&
-                newState.trainStartedAtMs > 0L &&
-                (nowMs - newState.trainStartedAtMs >= lineLockWarmupMs)
-
-        val lockAllowed =
-            trainMode &&
-                lockWarmupDone &&
-                !newState.currentName.isNullOrBlank() &&
-                !newState.lastName.isNullOrBlank()
-
-        val primaryNorm = newState.primaryLine?.let { GeoLineUtils.normalizeLine(it) }
-        val lockedNorm = newState.lockedLine?.let { GeoLineUtils.normalizeLine(it) }
-
-        val currentSupportsPrimary =
-            !newState.currentName.isNullOrBlank() &&
-                !newState.primaryLine.isNullOrBlank() &&
-                support.stationHasLine(newState.currentName!!, newState.primaryLine)
-
-        val nearestSupportsPrimary =
-            !newState.primaryLine.isNullOrBlank() &&
-                support.stationHasLine(nearest.name, newState.primaryLine)
-
-        if (
-            lockAllowed &&
-            !newState.lockedLine.isNullOrBlank() &&
-            !newState.primaryLine.isNullOrBlank() &&
-            lockedNorm != primaryNorm &&
-            currentSupportsPrimary &&
-            nearestSupportsPrimary
-        ) {
-            newState = newState.copy(
-                lockedLine = newState.primaryLine,
-                lockedCandidateLine = null,
-                lockedCandidateCount = 0
-            )
-            fastRelock = true
-        } else {
-            val skipLockResolveThisTurn =
-                trainMode && (strongLineConflict || relined)
-
-            if (lockAllowed && !skipLockResolveThisTurn) {
-                val lockResult = lineLockResolver.resolve(
-                    LineLockResolver.Input(
-                        trainMode = trainMode,
-                        primaryLine = newState.primaryLine,
-                        lockedLine = newState.lockedLine,
-                        lockedCandidateLine = newState.lockedCandidateLine,
-                        lockedCandidateCount = newState.lockedCandidateCount
-                    )
-                )
-
-                lockedPend = lockResult.lockedPend
-
-                newState = newState.copy(
-                    lockedLine = lockResult.lockedLine,
-                    lockedCandidateLine = lockResult.lockedCandidateLine,
-                    lockedCandidateCount = lockResult.lockedCandidateCount
-                )
-            } else {
-                if (!trainMode) {
-                    newState = newState.copy(
-                        lockedLine = null,
-                        lockedCandidateLine = null,
-                        lockedCandidateCount = 0
-                    )
-                } else {
-                    newState = newState.copy(
-                        lockedLine = newState.lockedLine,
-                        lockedCandidateLine = null,
-                        lockedCandidateCount = 0
-                    )
-                }
-            }
-        }
+        val lockOut = NextStationPredictorLockLogic.run(
+            state = newState,
+            support = support,
+            nearest = nearest,
+            trainMode = trainMode,
+            nowMs = nowMs,
+            lineLockWarmupMs = lineLockWarmupMs,
+            lineLockResolver = lineLockResolver,
+            strongLineConflict = switchOut.strongLineConflict,
+            relined = switchOut.relined,
+            unlockByStrongMismatch = switchOut.unlockByStrongMismatch
+        )
+        newState = lockOut.state
 
         val effectiveLine = newState.lockedLine ?: newState.primaryLine
 
@@ -455,29 +161,30 @@ class NextStationPredictor(
             effectiveLine = effectiveLine,
             newState = newState,
             trainMode = trainMode,
-            lockWarmupDone = lockWarmupDone,
-            lockAllowed = lockAllowed,
+            lockWarmupDone = lockOut.lockWarmupDone,
+            lockAllowed = lockOut.lockAllowed,
             lineLockWarmupMs = lineLockWarmupMs,
             nowMs = nowMs,
             nearest = nearest,
             nearestDist = nearestDist,
             currentDist = currentDist,
             movedDistM = movedDistM,
-            pend = pend,
-            lockedPend = lockedPend,
-            lineMatched = lineMatched,
-            forceReline = forceReline,
-            relined = relined,
-            relineAttempted = relineAttempted,
-            strongLineConflict = strongLineConflict,
-            currentMissing = currentMissing,
-            sameLineAdvanceLikely = sameLineAdvanceLikely,
-            lockedLineMismatch = lockedLineMismatch,
-            suppressCrossLineSwitch = suppressCrossLineSwitch,
-            lockedCrossLineBlock = lockedCrossLineBlock,
-            adjacencyOk = adjacencyOk,
-            fastRelock = fastRelock,
-            decision = decision,
+            pend = switchOut.pend,
+            lockedPend = lockOut.lockedPend,
+            lineMatched = switchOut.lineMatched,
+            forceReline = switchOut.forceReline,
+            relined = switchOut.relined,
+            relineAttempted = switchOut.relineAttempted,
+            strongLineConflict = switchOut.strongLineConflict,
+            currentMissing = switchOut.currentMissing,
+            sameLineAdvanceLikely = switchOut.sameLineAdvanceLikely,
+            lockedLineMismatch = switchOut.lockedLineMismatch,
+            suppressCrossLineSwitch = switchOut.suppressCrossLineSwitch,
+            lockedCrossLineBlock = switchOut.lockedCrossLineBlock,
+            unlockByStrongMismatch = switchOut.unlockByStrongMismatch,
+            adjacencyOk = switchOut.adjacencyOk,
+            fastRelock = lockOut.fastRelock,
+            decision = switchOut.decision,
             nextByAdj = nextByAdj,
             fwdBearing = fwdBearing,
             speedMps = speedMps,
