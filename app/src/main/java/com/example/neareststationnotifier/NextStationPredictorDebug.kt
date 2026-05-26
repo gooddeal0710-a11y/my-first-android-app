@@ -27,6 +27,7 @@ internal object NextStationPredictorDebug {
         lockedLineMismatch: Boolean,
         suppressCrossLineSwitch: Boolean,
         lockedCrossLineBlock: Boolean,
+        unlockByStrongMismatch: Boolean,
         adjacencyOk: Boolean,
         fastRelock: Boolean,
         decision: String,
@@ -71,6 +72,7 @@ internal object NextStationPredictorDebug {
             append(" llmis=").append(lockedLineMismatch)
             append(" xsup=").append(suppressCrossLineSwitch)
             append(" xblk=").append(lockedCrossLineBlock)
+            append(" xunlk=").append(unlockByStrongMismatch)
             append(" adjok=").append(adjacencyOk)
             append(" frelock=").append(fastRelock)
             append(" dec=").append(decision)
