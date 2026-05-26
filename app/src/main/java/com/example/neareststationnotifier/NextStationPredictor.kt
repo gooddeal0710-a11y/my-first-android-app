@@ -1,5 +1,6 @@
 package com.example.neareststationnotifier
 
+
 class NextStationPredictor(
     private val enterRadiusM: Double = 120.0,
     private val exitRadiusM: Double = 180.0,
